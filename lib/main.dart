@@ -5,6 +5,9 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_cube/flutter_cube.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'dart:math' as math;
 
 import 'selection_screen.dart';
 
@@ -17,9 +20,14 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       title: 'OMEGA Intercom',
-      home: MapScreen(),
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        useMaterial3: true,
+        brightness: Brightness.dark,
+      ),
+      home: const MapScreen(),
     );
   }
 }
@@ -34,6 +42,8 @@ class MapScreen extends StatefulWidget {
 class _MapScreenState extends State<MapScreen> {
   late GoogleMapController mapController;
   final Set<Marker> _markers = {};
+  final Set<Polyline> _polylines = {};
+  final TextEditingController _destinationController = TextEditingController();
   Position? _currentPosition;
   final LatLng _initialPosition = const LatLng(43.344444, 3.2125);
   StreamSubscription<Position>? _positionStreamSubscription;
@@ -62,6 +72,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void dispose() {
     _positionStreamSubscription?.cancel();
+    _destinationController.dispose();
     super.dispose();
   }
 
@@ -131,6 +142,62 @@ class _MapScreenState extends State<MapScreen> {
     return null;
   }
 
+  Future<void> _searchAndNavigate() async {
+    if (_currentPosition == null) return;
+    final query = _destinationController.text;
+    if (query.isEmpty) return;
+
+    final geocodeUrl = Uri.parse(
+        'https://nominatim.openstreetmap.org/search?q=${Uri.encodeComponent(query)}&format=json&limit=1');
+    final geocodeResponse =
+        await http.get(geocodeUrl, headers: {'User-Agent': 'omega_intercom'});
+    if (geocodeResponse.statusCode != 200) return;
+    final geocodeData = jsonDecode(geocodeResponse.body);
+    if (geocodeData.isEmpty) return;
+    final destLat = double.parse(geocodeData[0]['lat']);
+    final destLon = double.parse(geocodeData[0]['lon']);
+
+    final routeUrl = Uri.parse(
+        'https://router.project-osrm.org/route/v1/driving/${_currentPosition!.longitude},'
+        '${_currentPosition!.latitude};$destLon,$destLat?overview=full&geometries=geojson');
+    final routeResponse = await http.get(routeUrl);
+    if (routeResponse.statusCode != 200) return;
+    final routeData = jsonDecode(routeResponse.body);
+    final coords = routeData['routes'][0]['geometry']['coordinates'] as List;
+    final List<LatLng> points =
+        coords.map<LatLng>((c) => LatLng(c[1], c[0])).toList();
+
+    setState(() {
+      _markers.removeWhere((m) => m.markerId == const MarkerId('dest'));
+      _markers.add(Marker(
+          markerId: const MarkerId('dest'),
+          position: LatLng(destLat, destLon)));
+      _polylines
+        ..clear()
+        ..add(Polyline(
+            polylineId: const PolylineId('route'),
+            color: Colors.blue,
+            width: 5,
+            points: points));
+    });
+
+    mapController.animateCamera(
+        CameraUpdate.newLatLngBounds(_boundsFromLatLngList(points), 50));
+  }
+
+  LatLngBounds _boundsFromLatLngList(List<LatLng> list) {
+    final double x0 =
+        list.map((p) => p.latitude).reduce((a, b) => math.min(a, b));
+    final double x1 =
+        list.map((p) => p.latitude).reduce((a, b) => math.max(a, b));
+    final double y0 =
+        list.map((p) => p.longitude).reduce((a, b) => math.min(a, b));
+    final double y1 =
+        list.map((p) => p.longitude).reduce((a, b) => math.max(a, b));
+    return LatLngBounds(
+        southwest: LatLng(x0, y0), northeast: LatLng(x1, y1));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -143,11 +210,34 @@ class _MapScreenState extends State<MapScreen> {
               zoom: 15.0,
             ),
             markers: _markers, // L'ensemble de marqueurs est vide pour les rendre invisibles
+            polylines: _polylines,
             onMapCreated: _onMapCreated,
             myLocationEnabled: true,
             myLocationButtonEnabled: false,
             zoomControlsEnabled: false,
             mapToolbarEnabled: false,
+          ),
+          Positioned(
+            top: 40,
+            left: 20,
+            right: 20,
+            child: Material(
+              elevation: 4,
+              borderRadius: BorderRadius.circular(8),
+              child: TextField(
+                controller: _destinationController,
+                decoration: InputDecoration(
+                  hintText: 'Entrez votre destination',
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.search),
+                    onPressed: _searchAndNavigate,
+                  ),
+                  border: InputBorder.none,
+                ),
+                onSubmitted: (_) => _searchAndNavigate(),
+              ),
+            ),
           ),
           // Superposer le modèle 3D si la position est connue
           if (_currentPosition != null)
