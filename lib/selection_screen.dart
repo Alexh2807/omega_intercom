@@ -1,6 +1,6 @@
 // lib/selection_screen.dart
 import 'package:flutter/material.dart';
-import 'package:model_viewer_plus/model_viewer_plus.dart';
+import 'package:flutter_cube/flutter_cube.dart';
 
 // Définir la classe Vehicle pour organiser les données de chaque véhicule
 class Vehicle {
@@ -144,11 +144,11 @@ class VehicleSelectionScreen extends StatelessWidget {
       ),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(10.0),
-        child: ModelViewer(
-          src: vehicle.objPath,
-          alt: vehicle.name,
-          autoRotate: true,
-          cameraControls: false,
+        child: Cube(
+          interactive: false,
+          onSceneCreated: (Scene scene) {
+            scene.world.add(Object(fileName: vehicle.objPath));
+          },
         ),
       ),
     );

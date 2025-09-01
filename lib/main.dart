@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:model_viewer_plus/model_viewer_plus.dart';
+import 'package:flutter_cube/flutter_cube.dart';
 
 import 'selection_screen.dart';
 
@@ -166,12 +166,11 @@ class _MapScreenState extends State<MapScreen> {
                     child: SizedBox(
                       width: 100, // Ajuster la taille
                       height: 100,
-                      child: ModelViewer(
-                        src: _currentVehicle.objPath, // Chemin vers votre fichier .obj
-                        alt: _currentVehicle.name,
-                        ar: false, // Désactiver la réalité augmentée
-                        autoRotate: true,
-                        cameraControls: false,
+                      child: Cube(
+                        interactive: false,
+                        onSceneCreated: (Scene scene) {
+                          scene.world.add(Object(fileName: _currentVehicle.objPath));
+                        },
                       ),
                     ),
                   );
