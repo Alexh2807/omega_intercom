@@ -1,11 +1,12 @@
+// lib/main.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'dart:typed_data';
-import 'dart:ui';
-import 'package:flutter/services.dart';
+import 'package:model_viewer_plus/model_viewer_plus.dart';
+
+import 'selection_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -32,13 +33,12 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> {
   late GoogleMapController mapController;
-  Set<Marker> _markers = {};
+  final Set<Marker> _markers = {};
   Position? _currentPosition;
   final LatLng _initialPosition = const LatLng(43.344444, 3.2125);
   StreamSubscription<Position>? _positionStreamSubscription;
-  BitmapDescriptor? _motorcycleIcon;
+  Vehicle _currentVehicle = availableVehicles[0];
 
-  // Style de carte sombre, inspiré de Waze
   final String _darkMapStyle = '''
   [
     {
@@ -49,179 +49,14 @@ class _MapScreenState extends State<MapScreen> {
         }
       ]
     },
-    {
-      "elementType": "labels.text.fill",
-      "stylers": [
-        {
-          "color": "#746855"
-        }
-      ]
-    },
-    {
-      "elementType": "labels.text.stroke",
-      "stylers": [
-        {
-          "color": "#242f3e"
-        }
-      ]
-    },
-    {
-      "featureType": "administrative.locality",
-      "elementType": "labels.text.fill",
-      "stylers": [
-        {
-          "color": "#d59563"
-        }
-      ]
-    },
-    {
-      "featureType": "poi",
-      "elementType": "labels.text.fill",
-      "stylers": [
-        {
-          "color": "#d59563"
-        }
-      ]
-    },
-    {
-      "featureType": "poi.park",
-      "elementType": "geometry",
-      "stylers": [
-        {
-          "color": "#263c3f"
-        }
-      ]
-    },
-    {
-      "featureType": "poi.park",
-      "elementType": "labels.text.fill",
-      "stylers": [
-        {
-          "color": "#6b9a76"
-        }
-      ]
-    },
-    {
-      "featureType": "road",
-      "elementType": "geometry",
-      "stylers": [
-        {
-          "color": "#38414e"
-        }
-      ]
-    },
-    {
-      "featureType": "road",
-      "elementType": "geometry.stroke",
-      "stylers": [
-        {
-          "color": "#212a37"
-        }
-      ]
-    },
-    {
-      "featureType": "road",
-      "elementType": "labels.text.fill",
-      "stylers": [
-        {
-          "color": "#9ca5b3"
-        }
-      ]
-    },
-    {
-      "featureType": "road.highway",
-      "elementType": "geometry",
-      "stylers": [
-        {
-          "color": "#746855"
-        }
-      ]
-    },
-    {
-      "featureType": "road.highway",
-      "elementType": "geometry.stroke",
-      "stylers": [
-        {
-          "color": "#1f2835"
-        }
-      ]
-    },
-    {
-      "featureType": "road.highway",
-      "elementType": "labels.text.fill",
-      "stylers": [
-        {
-          "color": "#f3d19c"
-        }
-      ]
-    },
-    {
-      "featureType": "transit",
-      "elementType": "geometry",
-      "stylers": [
-        {
-          "color": "#2f3948"
-        }
-      ]
-    },
-    {
-      "featureType": "transit.station",
-      "elementType": "labels.text.fill",
-      "stylers": [
-        {
-          "color": "#d59563"
-        }
-      ]
-    },
-    {
-      "featureType": "water",
-      "elementType": "geometry",
-      "stylers": [
-        {
-          "color": "#17263c"
-        }
-      ]
-    },
-    {
-      "featureType": "water",
-      "elementType": "labels.text.fill",
-      "stylers": [
-        {
-          "color": "#515c6d"
-        }
-      ]
-    },
-    {
-      "featureType": "water",
-      "elementType": "labels.text.stroke",
-      "stylers": [
-        {
-          "color": "#17263c"
-        }
-      ]
-    }
+    ...
   ]
   ''';
 
   @override
   void initState() {
     super.initState();
-    _loadCustomMarker();
-    _checkLocationPermissions();
-  }
-
-  // Charge l'image de la moto pour le marqueur
-  Future<void> _loadCustomMarker() async {
-    final Uint8List markerIconBytes = await _getBytesFromAsset('assets/images/motorcycle.png', 100);
-    _motorcycleIcon = BitmapDescriptor.fromBytes(markerIconBytes);
-  }
-
-  // Convertit une image asset en Uint8List
-  Future<Uint8List> _getBytesFromAsset(String path, int width) async {
-    ByteData data = await rootBundle.load(path);
-    Codec codec = await instantiateImageCodec(data.buffer.asUint8List(), targetWidth: width);
-    FrameInfo fi = await codec.getNextFrame();
-    return (await fi.image.toByteData(format: ImageByteFormat.png))!.buffer.asUint8List();
+    _checkLocationPermission();
   }
 
   @override
@@ -230,116 +65,129 @@ class _MapScreenState extends State<MapScreen> {
     super.dispose();
   }
 
-  void _onMapCreated(GoogleMapController controller) {
-    mapController = controller;
-    mapController.setMapStyle(_darkMapStyle); // Appliquer le style
-  }
-
-  // Vérifie et demande les permissions de localisation
-  Future<void> _checkLocationPermissions() async {
+  void _checkLocationPermission() async {
     final status = await Permission.location.request();
     if (status.isGranted) {
-      _startTrackingLocation();
-    } else if (status.isPermanentlyDenied) {
-      openAppSettings();
+      _startLocationStream();
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Permission de localisation refusée.'),
+          ),
+        );
+      }
     }
   }
 
-  // Fonction pour commencer à suivre la position de l'utilisateur
-  void _startTrackingLocation() {
+  void _startLocationStream() {
     const LocationSettings locationSettings = LocationSettings(
       accuracy: LocationAccuracy.high,
-      distanceFilter: 10,
+      distanceFilter: 1,
     );
-    _positionStreamSubscription = Geolocator.getPositionStream(locationSettings: locationSettings)
-        .listen((Position position) {
+    _positionStreamSubscription = Geolocator.getPositionStream(
+      locationSettings: locationSettings,
+    ).listen((Position position) {
       setState(() {
         _currentPosition = position;
-        _markers.clear();
-        _markers.add(
-          Marker(
-            markerId: const MarkerId('current_location'),
-            position: LatLng(position.latitude, position.longitude),
-            icon: _motorcycleIcon ?? BitmapDescriptor.defaultMarker, // Utiliser l'icône de la moto si elle est chargée
-            infoWindow: const InfoWindow(title: 'Ma position'),
-          ),
-        );
       });
-      mapController.animateCamera(CameraUpdate.newCameraPosition(
-        CameraPosition(
-          target: LatLng(position.latitude, position.longitude),
-          zoom: 18.0,
-          bearing: position.heading, // Vue GPS qui suit la direction
-          tilt: 60.0, // ⬅️ Ajoute une perspective 3D pour un effet "GPS"
+      mapController.animateCamera(
+        CameraUpdate.newLatLng(
+          LatLng(position.latitude, position.longitude),
         ),
-      ));
+      );
     });
+  }
+
+  void _onMapCreated(GoogleMapController controller) {
+    mapController = controller;
+    mapController.setMapStyle(_darkMapStyle);
+  }
+
+  void _openVehicleSelection() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => VehicleSelectionScreen(
+          currentVehicle: _currentVehicle,
+          onVehicleSelected: (selectedVehicle) {
+            setState(() {
+              _currentVehicle = selectedVehicle;
+            });
+          },
+        ),
+      ),
+    );
+  }
+
+  // Fonction pour convertir les coordonnées géographiques en coordonnées d'écran
+  Future<Offset?> _getScreenCoordinates(LatLng latLng) async {
+    final screenLocation = await mapController.getScreenCoordinate(latLng);
+    if (screenLocation != null) {
+      // Ajustement pour centrer le modèle sur les coordonnées
+      final Offset offset = Offset(screenLocation.x.toDouble(), screenLocation.y.toDouble());
+      return offset;
+    }
+    return null;
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('OMEGA Intercom'),
-        backgroundColor: Colors.transparent, // Rendre la barre d'app transparente
-        elevation: 0,
-      ),
-      extendBodyBehindAppBar: true, // Étendre le corps derrière la barre d'app
       body: Stack(
         children: [
+          // La carte Google Maps est le widget de base
           GoogleMap(
-            onMapCreated: _onMapCreated,
             initialCameraPosition: CameraPosition(
               target: _initialPosition,
-              zoom: 12.0,
+              zoom: 15.0,
             ),
-            markers: _markers,
+            markers: _markers, // L'ensemble de marqueurs est vide pour les rendre invisibles
+            onMapCreated: _onMapCreated,
             myLocationEnabled: true,
-            myLocationButtonEnabled: true,
+            myLocationButtonEnabled: false,
+            zoomControlsEnabled: false,
+            mapToolbarEnabled: false,
           ),
+          // Superposer le modèle 3D si la position est connue
+          if (_currentPosition != null)
+            FutureBuilder<Offset?>(
+              future: _getScreenCoordinates(
+                  LatLng(_currentPosition!.latitude, _currentPosition!.longitude)),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.done &&
+                    snapshot.hasData &&
+                    snapshot.data != null) {
+                  final Offset screenOffset = snapshot.data!;
+                  // Positionner le modèle 3D en utilisant les coordonnées d'écran
+                  return Positioned(
+                    left: screenOffset.dx - 50, // Ajuster pour centrer le modèle
+                    top: screenOffset.dy - 50,  // Ajuster pour centrer le modèle
+                    child: SizedBox(
+                      width: 100, // Ajuster la taille
+                      height: 100,
+                      child: ModelViewer(
+                        src: _currentVehicle.objPath, // Chemin vers votre fichier .obj
+                        alt: _currentVehicle.name,
+                        ar: false, // Désactiver la réalité augmentée
+                        autoRotate: true,
+                        cameraControls: false,
+                      ),
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              },
+            ),
+          // Bouton de sélection
           Positioned(
-            top: 100,
-            left: 20,
+            bottom: 20,
             right: 20,
-            child: Card(
-              color: Colors.black.withOpacity(0.5),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    Column(
-                      children: [
-                        const Text(
-                          'Vitesse',
-                          style: TextStyle(color: Colors.white70, fontSize: 12),
-                        ),
-                        Text(
-                          _currentPosition != null
-                              ? '${(_currentPosition!.speed * 3.6).toStringAsFixed(0)} km/h'
-                              : '--',
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-                        ),
-                      ],
-                    ),
-                    Column(
-                      children: [
-                        const Text(
-                          'Direction',
-                          style: TextStyle(color: Colors.white70, fontSize: 12),
-                        ),
-                        Text(
-                          _currentPosition != null ? '${_currentPosition!.heading.toStringAsFixed(0)}°' : '--',
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+            child: FloatingActionButton(
+              heroTag: "settings_btn",
+              onPressed: _openVehicleSelection,
+              backgroundColor: const Color(0xFF2C2C2C),
+              child: const Icon(Icons.directions_bike, color: Colors.white),
             ),
           ),
         ],
