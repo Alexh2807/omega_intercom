@@ -1,40 +1,32 @@
 name: omega_intercom
-description: "L'application permettra de creer une systeme de GPS zvec Intercom dédié à la moto et la communications entre plusieurs personnes sur different moyen de communication, bluetooth, Local, Internet"
-# The following line prevents the package from being accidentally published to
-# pub.dev using `flutter pub publish`. This is preferred for private packages.
+description: Une application GPS moderne pour motards.
 publish_to: 'none'
-
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.9.0
+  sdk: '>=3.4.1 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
-  google_maps_flutter: ^2.5.3
+
+  # --- Plugins essentiels pour le GPS ---
+  # Le plugin officiel pour intégrer Google Maps
+  google_maps_flutter: ^2.5.0
+  # Le plugin pour accéder au capteur GPS du téléphone
   geolocator: ^12.0.0
-  permission_handler: ^11.3.1
-  flutter_cube: ^0.1.1
-  http: ^1.2.0
+  # Un plugin pour effectuer des appels à des APIs (comme l'API Google Directions)
+  http: ^1.2.1
+
+  cupertino_icons: ^1.0.6
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  flutter_lints: ^3.0.0
 
-  flutter_lints: ^5.0.0
-
-# For information on the generic Dart part of this file, see the
-# following page: https://dart.dev/tools/pub/pubspec
-
-# The following section is specific to Flutter packages.
 flutter:
-
-  # The following line ensures that the Material Icons font is
-  # included with your application, so that you can use the icons in
-  # the material Icons class.
   uses-material-design: true
 
   assets:
-    - assets/images/
-    - assets/objects/
+    - assets/map_styles/

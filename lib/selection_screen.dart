@@ -1,152 +1,104 @@
-// lib/selection_screen.dart
 import 'package:flutter/material.dart';
-import 'package:flutter_cube/flutter_cube.dart';
 
-// Définir la classe Vehicle pour organiser les données de chaque véhicule
-class Vehicle {
-  final String name;
-  final String objPath;
-  final String description;
-
-  const Vehicle({
-    required this.name,
-    required this.objPath,
-    required this.description,
-  });
-}
-
-// Données de base pour les véhicules disponibles
-const List<Vehicle> availableVehicles = [
-  Vehicle(
-    name: 'motorcycle1',
-    objPath: 'assets/objects/motorcycle1.obj',
-    description: 'Une moto rapide et agile, parfaite pour la ville.',
-  ),
-  // Ajoutez d'autres véhicules ici
-];
-
-class VehicleSelectionScreen extends StatelessWidget {
-  final ValueChanged<Vehicle> onVehicleSelected;
-  final Vehicle currentVehicle;
-
-  const VehicleSelectionScreen({
-    Key? key,
-    required this.onVehicleSelected,
-    required this.currentVehicle,
-  }) : super(key: key);
+class SelectionScreen extends StatelessWidget {
+  const SelectionScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
+    // Utilise MediaQuery pour rendre le design adaptable à différentes tailles d'écran
+    final screenWidth = MediaQuery.of(context).size.width;
+
     return Scaffold(
-      backgroundColor: const Color(0xFF1E1E1E), // Thème sombre
       appBar: AppBar(
+        // Utilise la couleur primaire du thème pour la barre d'applications
+        backgroundColor: Theme.of(context).colorScheme.primary,
+        foregroundColor: Theme.of(context).colorScheme.onPrimary,
         title: const Text(
-          'Sélection du véhicule',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-        backgroundColor: const Color(0xFF1E1E1E),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
-        ),
-      ),
-      body: ListView.builder(
-        padding: const EdgeInsets.all(16.0),
-        itemCount: availableVehicles.length,
-        itemBuilder: (context, index) {
-          final vehicle = availableVehicles[index];
-          final isSelected = vehicle.name == currentVehicle.name;
-
-          return _buildVehicleCard(context, vehicle, isSelected);
-        },
-      ),
-    );
-  }
-
-  Widget _buildVehicleCard(
-      BuildContext context, Vehicle vehicle, bool isSelected) {
-    return GestureDetector(
-      onTap: () {
-        onVehicleSelected(vehicle);
-        Navigator.pop(context);
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        margin: const EdgeInsets.only(bottom: 16.0),
-        decoration: BoxDecoration(
-          color: isSelected ? Colors.blue.withOpacity(0.2) : const Color(0xFF2C2C2C),
-          borderRadius: BorderRadius.circular(15.0),
-          border: Border.all(
-            color: isSelected ? Colors.blue : Colors.transparent,
-            width: 2.0,
+          'Choisissez votre modèle',
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
           ),
-          boxShadow: isSelected
-              ? [
-            BoxShadow(
-              color: Colors.blue.withOpacity(0.5),
-              spreadRadius: 2,
-              blurRadius: 10,
-            ),
-          ]
-              : null,
         ),
+        centerTitle: true,
+      ),
+      body: Center(
         child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Row(
-            children: [
-              _buildModelPreview(vehicle),
-              const SizedBox(width: 20),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      vehicle.name.toUpperCase(),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 18,
-                      ),
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      vehicle.description,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
-                      ),
-                    ),
-                  ],
-                ),
+          // Ajoute une marge horizontale pour ne pas coller les bords de l'écran
+          padding: const EdgeInsets.symmetric(horizontal: 16.0),
+          child: ConstrainedBox(
+            // Limite la largeur maximale de la carte sur les grands écrans
+            constraints: const BoxConstraints(maxWidth: 500),
+            child: Card(
+              elevation: 8.0, // Ajoute une ombre portée pour un effet de profondeur
+              clipBehavior: Clip.antiAlias, // Assure que l'image ne dépasse pas les coins arrondis
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(15.0),
               ),
-              if (isSelected)
-                const Icon(
-                  Icons.check_circle,
-                  color: Colors.blue,
-                  size: 30,
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+              child: Column(
+                mainAxisSize: MainAxisSize.min, // La carte prend la taille de son contenu
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Affiche l'image de la moto depuis les assets
+                  Image.asset(
+                    'assets/images/motorcycle1.png',
+                    fit: BoxFit.cover,
+                    height: 250, // Hauteur fixe pour l'image
+                  ),
 
-  Widget _buildModelPreview(Vehicle vehicle) {
-    return Container(
-      width: 80,
-      height: 80,
-      decoration: BoxDecoration(
-        color: Colors.white10,
-        borderRadius: BorderRadius.circular(10.0),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(10.0),
-        child: Cube(
-          interactive: false,
-          onSceneCreated: (Scene scene) {
-            scene.world.add(Object(fileName: vehicle.objPath));
-          },
+                  // Ajoute un espace entre l'image et le texte
+                  const SizedBox(height: 16),
+
+                  // Titre du modèle
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16.0),
+                    child: Text(
+                      'Omega Intercom v1',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+
+                  // Description du modèle
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                    child: Text(
+                      'Le système de communication nouvelle génération pour tous vos trajets.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.grey,
+                      ),
+                    ),
+                  ),
+
+                  // Bouton de sélection
+                  Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        // Logique à ajouter lorsque l'utilisateur clique sur le bouton
+                        // Par exemple : Navigator.push(...) vers une autre page
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Modèle sélectionné !')),
+                        );
+                      },
+                      icon: const Icon(Icons.check_circle_outline),
+                      label: const Text('Sélectionner ce modèle'),
+                      style: ElevatedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        textStyle: const TextStyle(fontSize: 18),
+                        backgroundColor: Theme.of(context).colorScheme.primary,
+                        foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
