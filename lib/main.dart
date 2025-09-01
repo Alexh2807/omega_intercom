@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:flutter_cube/flutter_cube.dart';
+import 'package:flutter_cube/flutter_cube.dart' as cube; // Import avec préfixe
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:math' as math;
@@ -39,7 +39,7 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   late GoogleMapController mapController;
   final Set<Marker> _markers = {};
   final Set<Polyline> _polylines = {};
@@ -48,6 +48,10 @@ class _MapScreenState extends State<MapScreen> {
   final LatLng _initialPosition = const LatLng(43.344444, 3.2125);
   StreamSubscription<Position>? _positionStreamSubscription;
   Vehicle _currentVehicle = availableVehicles[0];
+
+  bool _isSearchBarVisible = true;
+  late AnimationController _animationController;
+  late Animation<double> _animation;
 
   final String _darkMapStyle = '''
   [
@@ -59,7 +63,157 @@ class _MapScreenState extends State<MapScreen> {
         }
       ]
     },
-    ...
+    {
+      "elementType": "labels.text.fill",
+      "stylers": [
+        {
+          "color": "#746855"
+        }
+      ]
+    },
+    {
+      "elementType": "labels.text.stroke",
+      "stylers": [
+        {
+          "color": "#242f3e"
+        }
+      ]
+    },
+    {
+      "featureType": "administrative.locality",
+      "elementType": "labels.text.fill",
+      "stylers": [
+        {
+          "color": "#d59563"
+        }
+      ]
+    },
+    {
+      "featureType": "poi",
+      "elementType": "labels.text.fill",
+      "stylers": [
+        {
+          "color": "#d59563"
+        }
+      ]
+    },
+    {
+      "featureType": "poi.park",
+      "elementType": "geometry",
+      "stylers": [
+        {
+          "color": "#263c3f"
+        }
+      ]
+    },
+    {
+      "featureType": "poi.park",
+      "elementType": "labels.text.fill",
+      "stylers": [
+        {
+          "color": "#6b9a76"
+        }
+      ]
+    },
+    {
+      "featureType": "road",
+      "elementType": "geometry",
+      "stylers": [
+        {
+          "color": "#38414e"
+        }
+      ]
+    },
+    {
+      "featureType": "road",
+      "elementType": "geometry.stroke",
+      "stylers": [
+        {
+          "color": "#212a37"
+        }
+      ]
+    },
+    {
+      "featureType": "road",
+      "elementType": "labels.text.fill",
+      "stylers": [
+        {
+          "color": "#9ca5b3"
+        }
+      ]
+    },
+    {
+      "featureType": "road.highway",
+      "elementType": "geometry",
+      "stylers": [
+        {
+          "color": "#746855"
+        }
+      ]
+    },
+    {
+      "featureType": "road.highway",
+      "elementType": "geometry.stroke",
+      "stylers": [
+        {
+          "color": "#1f2835"
+        }
+      ]
+    },
+    {
+      "featureType": "road.highway",
+      "elementType": "labels.text.fill",
+      "stylers": [
+        {
+          "color": "#f3d19c"
+        }
+      ]
+    },
+    {
+      "featureType": "transit",
+      "elementType": "geometry",
+      "stylers": [
+        {
+          "color": "#2f3948"
+        }
+      ]
+    },
+    {
+      "featureType": "transit.station",
+      "elementType": "labels.text.fill",
+      "stylers": [
+        {
+          "color": "#d59563"
+        }
+      ]
+    },
+    {
+      "featureType": "water",
+      "elementType": "geometry",
+      "stylers": [
+        {
+          "color": "#17263c"
+        }
+      ]
+    },
+    {
+      "featureType": "water",
+      "elementType": "labels.text.fill",
+      "stylers": [
+        {
+          "color": "#515c6d"
+        }
+      ]
+    },
+    {
+      "featureType": "water",
+      "elementType": "labels.text.stroke",
+      "stylers": [
+        {
+          "color": "#17263c"
+        }
+      ]
+    }
   ]
   ''';
 
@@ -67,12 +221,23 @@ class _MapScreenState extends State<MapScreen> {
   void initState() {
     super.initState();
     _checkLocationPermission();
+
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+
+    _animation = CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeInOut,
+    );
   }
 
   @override
   void dispose() {
     _positionStreamSubscription?.cancel();
     _destinationController.dispose();
+    _animationController.dispose();
     super.dispose();
   }
 
@@ -99,9 +264,11 @@ class _MapScreenState extends State<MapScreen> {
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: locationSettings,
     ).listen((Position position) {
-      setState(() {
-        _currentPosition = position;
-      });
+      if(mounted) {
+        setState(() {
+          _currentPosition = position;
+        });
+      }
       mapController.animateCamera(
         CameraUpdate.newLatLng(
           LatLng(position.latitude, position.longitude),
@@ -131,17 +298,6 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  // Fonction pour convertir les coordonnées géographiques en coordonnées d'écran
-  Future<Offset?> _getScreenCoordinates(LatLng latLng) async {
-    final screenLocation = await mapController.getScreenCoordinate(latLng);
-    if (screenLocation != null) {
-      // Ajustement pour centrer le modèle sur les coordonnées
-      final Offset offset = Offset(screenLocation.x.toDouble(), screenLocation.y.toDouble());
-      return offset;
-    }
-    return null;
-  }
-
   Future<void> _searchAndNavigate() async {
     if (_currentPosition == null) return;
     final query = _destinationController.text;
@@ -150,7 +306,7 @@ class _MapScreenState extends State<MapScreen> {
     final geocodeUrl = Uri.parse(
         'https://nominatim.openstreetmap.org/search?q=${Uri.encodeComponent(query)}&format=json&limit=1');
     final geocodeResponse =
-        await http.get(geocodeUrl, headers: {'User-Agent': 'omega_intercom'});
+    await http.get(geocodeUrl, headers: {'User-Agent': 'omega_intercom'});
     if (geocodeResponse.statusCode != 200) return;
     final geocodeData = jsonDecode(geocodeResponse.body);
     if (geocodeData.isEmpty) return;
@@ -159,13 +315,13 @@ class _MapScreenState extends State<MapScreen> {
 
     final routeUrl = Uri.parse(
         'https://router.project-osrm.org/route/v1/driving/${_currentPosition!.longitude},'
-        '${_currentPosition!.latitude};$destLon,$destLat?overview=full&geometries=geojson');
+            '${_currentPosition!.latitude};$destLon,$destLat?overview=full&geometries=geojson');
     final routeResponse = await http.get(routeUrl);
     if (routeResponse.statusCode != 200) return;
     final routeData = jsonDecode(routeResponse.body);
     final coords = routeData['routes'][0]['geometry']['coordinates'] as List;
     final List<LatLng> points =
-        coords.map<LatLng>((c) => LatLng(c[1], c[0])).toList();
+    coords.map<LatLng>((c) => LatLng(c[1], c[0])).toList();
 
     setState(() {
       _markers.removeWhere((m) => m.markerId == const MarkerId('dest'));
@@ -179,6 +335,8 @@ class _MapScreenState extends State<MapScreen> {
             color: Colors.blue,
             width: 5,
             points: points));
+
+      _isSearchBarVisible = false;
     });
 
     mapController.animateCamera(
@@ -187,13 +345,13 @@ class _MapScreenState extends State<MapScreen> {
 
   LatLngBounds _boundsFromLatLngList(List<LatLng> list) {
     final double x0 =
-        list.map((p) => p.latitude).reduce((a, b) => math.min(a, b));
+    list.map((p) => p.latitude).reduce((a, b) => math.min(a, b));
     final double x1 =
-        list.map((p) => p.latitude).reduce((a, b) => math.max(a, b));
+    list.map((p) => p.latitude).reduce((a, b) => math.max(a, b));
     final double y0 =
-        list.map((p) => p.longitude).reduce((a, b) => math.min(a, b));
+    list.map((p) => p.longitude).reduce((a, b) => math.min(a, b));
     final double y1 =
-        list.map((p) => p.longitude).reduce((a, b) => math.max(a, b));
+    list.map((p) => p.longitude).reduce((a, b) => math.max(a, b));
     return LatLngBounds(
         southwest: LatLng(x0, y0), northeast: LatLng(x1, y1));
   }
@@ -203,13 +361,12 @@ class _MapScreenState extends State<MapScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // La carte Google Maps est le widget de base
           GoogleMap(
             initialCameraPosition: CameraPosition(
               target: _initialPosition,
               zoom: 15.0,
             ),
-            markers: _markers, // L'ensemble de marqueurs est vide pour les rendre invisibles
+            markers: _markers,
             polylines: _polylines,
             onMapCreated: _onMapCreated,
             myLocationEnabled: true,
@@ -217,8 +374,11 @@ class _MapScreenState extends State<MapScreen> {
             zoomControlsEnabled: false,
             mapToolbarEnabled: false,
           ),
-          Positioned(
-            top: 40,
+          // Search Bar
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+            top: _isSearchBarVisible ? 40 : -100,
             left: 20,
             right: 20,
             child: Material(
@@ -239,7 +399,6 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
           ),
-          // Superposer le modèle 3D si la position est connue
           if (_currentPosition != null)
             FutureBuilder<Offset?>(
               future: _getScreenCoordinates(
@@ -249,17 +408,16 @@ class _MapScreenState extends State<MapScreen> {
                     snapshot.hasData &&
                     snapshot.data != null) {
                   final Offset screenOffset = snapshot.data!;
-                  // Positionner le modèle 3D en utilisant les coordonnées d'écran
                   return Positioned(
-                    left: screenOffset.dx - 50, // Ajuster pour centrer le modèle
-                    top: screenOffset.dy - 50,  // Ajuster pour centrer le modèle
+                    left: screenOffset.dx - 50,
+                    top: screenOffset.dy - 50,
                     child: SizedBox(
-                      width: 100, // Ajuster la taille
+                      width: 100,
                       height: 100,
-                      child: Cube(
+                      child: cube.Cube(
                         interactive: false,
-                        onSceneCreated: (Scene scene) {
-                          scene.world.add(Object(fileName: _currentVehicle.objPath));
+                        onSceneCreated: (cube.Scene scene) {
+                          scene.world.add(cube.Object(fileName: _currentVehicle.objPath));
                         },
                       ),
                     ),
@@ -268,7 +426,7 @@ class _MapScreenState extends State<MapScreen> {
                 return const SizedBox.shrink();
               },
             ),
-          // Bouton de sélection
+          // Vehicle selection button
           Positioned(
             bottom: 20,
             right: 20,
@@ -282,5 +440,21 @@ class _MapScreenState extends State<MapScreen> {
         ],
       ),
     );
+  }
+
+  // ============== CORRECTION ICI ==============
+  Future<Offset?> _getScreenCoordinates(LatLng latLng) async {
+    // On vérifie que le widget est toujours affiché
+    if (!mounted) return null;
+
+    // Cette fonction peut renvoyer 'null' si la carte n'est pas prête
+    final screenCoordinate = await mapController.getScreenCoordinate(latLng);
+
+    // On ajoute une vérification pour gérer le cas où la coordonnée est nulle
+    if (screenCoordinate == null) {
+      return null;
+    }
+
+    return Offset(screenCoordinate.x.toDouble(), screenCoordinate.y.toDouble());
   }
 }

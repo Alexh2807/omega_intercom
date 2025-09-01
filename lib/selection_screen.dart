@@ -15,14 +15,14 @@ class Vehicle {
   });
 }
 
-// Données de base pour les véhicules disponibles (pour le moment, seulement la moto)
+// Données de base pour les véhicules disponibles
 const List<Vehicle> availableVehicles = [
   Vehicle(
     name: 'motorcycle1',
     objPath: 'assets/objects/motorcycle1.obj',
     description: 'Une moto rapide et agile, parfaite pour la ville.',
   ),
-  // Ajoutez d'autres véhicules ici au fur et à mesure
+  // Ajoutez d'autres véhicules ici
 ];
 
 class VehicleSelectionScreen extends StatelessWidget {
@@ -70,7 +70,8 @@ class VehicleSelectionScreen extends StatelessWidget {
         onVehicleSelected(vehicle);
         Navigator.pop(context);
       },
-      child: Container(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
         margin: const EdgeInsets.only(bottom: 16.0),
         decoration: BoxDecoration(
           color: isSelected ? Colors.blue.withOpacity(0.2) : const Color(0xFF2C2C2C),
@@ -93,10 +94,8 @@ class VehicleSelectionScreen extends StatelessWidget {
           padding: const EdgeInsets.all(16.0),
           child: Row(
             children: [
-              // Aperçu du modèle 3D
               _buildModelPreview(vehicle),
               const SizedBox(width: 20),
-              // Nom et description
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -120,7 +119,6 @@ class VehicleSelectionScreen extends StatelessWidget {
                   ],
                 ),
               ),
-              // Icône de sélection
               if (isSelected)
                 const Icon(
                   Icons.check_circle,
