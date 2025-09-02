@@ -2,160 +2,231 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:bonsoir/bonsoir.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_sound/flutter_sound.dart';
-import 'package:network_info_plus/network_info_plus.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 
+enum ConnectionMode { lan, internet }
+
 class PeerInfo {
-  final InternetAddress address;
   final String name;
-  const PeerInfo(this.address, this.name);
+  final InternetAddress address;
+  final int port;
+  final bool isServer;
+  const PeerInfo({
+    required this.name,
+    required this.address,
+    required this.port,
+    this.isServer = false,
+  });
+}
+
+// --- Lecteur natif Android via MethodChannel ---
+class _NativePlayer {
+  static const MethodChannel _ch = MethodChannel('intercom_native_audio');
+
+  Future<void> start({int sampleRate = 16000}) async {
+    try {
+      await _ch.invokeMethod('start', {'sr': sampleRate});
+    } catch (e) {
+      debugPrint('Native start error: $e');
+    }
+  }
+
+  Future<void> write(Uint8List data) async {
+    try {
+      // On passe directement le ByteArray au côté Kotlin
+      await _ch.invokeMethod('write', data);
+    } catch (e) {
+      debugPrint('Native write error: $e');
+    }
+  }
+
+  Future<void> stop() async {
+    try {
+      await _ch.invokeMethod('stop');
+    } catch (e) {
+      debugPrint('Native stop error: $e');
+    }
+  }
 }
 
 class IntercomService {
-  static const String _serviceType = '_omega-intercom._tcp';
-  static const int _port = 55667;
-  static const String _helloHeader = 'OMEGA-INTERCOM|HELLO|';
-  static const String _byeHeader = 'OMEGA-INTERCOM|BYE|';
+  // PCM16 mono @ 16 kHz : simple, fiable
+  static const int _sampleRate = 16000;
 
-  // Réseau
-  RawDatagramSocket? _socket;
-  final Set<InternetAddress> _peers = <InternetAddress>{};
-  final Map<InternetAddress, String> _peerNames = <InternetAddress, String>{};
-  Set<InternetAddress> _selfIps = <InternetAddress>{};
+  // Ports
+  static const int _lanAudioPort = 50005;     // audio PCM LAN
+  static const int _lanDiscoveryPort = 50004; // découverte LAN
+  static const int _defaultInternetPort = 55667;
 
-  // Audio I/O
+  // Réseau / Audio
+  RawDatagramSocket? _audioSock;
+  RawDatagramSocket? _discoverySock;
   final AudioRecorder _recorder = AudioRecorder();
-  final FlutterSoundPlayer _player = FlutterSoundPlayer();
   StreamSubscription<Uint8List>? _micSub;
 
-  // mDNS
-  BonsoirBroadcast? _broadcast;
-  BonsoirDiscovery? _discovery;
+  final _native = _NativePlayer();
 
-  // Handshake
+  bool _initialized = false;
+
+  // Mode
+  ConnectionMode _mode = ConnectionMode.lan;
+
+  // Internet
+  String? _serverHost;
+  int _serverPort = _defaultInternetPort;
+  InternetAddress? _serverAddress;
+  int _internetPeerCount = 0; // nombre total de clients (y compris soi)
+
+  // Découverte LAN
+  final String _selfId =
+      '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${Random().nextInt(0xFFFF).toRadixString(16)}';
+  final Map<String, PeerInfo> _lanPeers = {};    // ip -> PeerInfo
+  final Map<String, DateTime> _lanLastSeen = {}; // ip -> lastSeen
   Timer? _helloTimer;
-  String _deviceName = 'Omega Intercom';
-  final String _nodeId = 'n' + DateTime.now().millisecondsSinceEpoch.toRadixString(36);
 
-  // Streams
-  final StreamController<int> _peersCountController = StreamController<int>.broadcast();
-  final StreamController<List<PeerInfo>> _peersController = StreamController<List<PeerInfo>>.broadcast();
-  final StreamController<String> _logController = StreamController<String>.broadcast();
+  // Flux UI
+  final _logC = StreamController<String>.broadcast();
+  final _peersC = StreamController<List<PeerInfo>>.broadcast();
+  Stream<String> get logStream => _logC.stream;
+  Stream<List<PeerInfo>> get peersStream => _peersC.stream;
+  void _log(String m) { if (kDebugMode) print('[Intercom] $m'); _logC.add(m); }
 
-  Stream<int> get peersCountStream => _peersCountController.stream;
-  Stream<List<PeerInfo>> get peersStream => _peersController.stream;
-  Stream<String> get logStream => _logController.stream;
+  // ========= API UI =========
 
-  void _log(String message) {
-    final ts = DateTime.now().toIso8601String();
-    final line = '[$ts] $message';
-    if (kDebugMode) print('[Intercom] $line');
-    _logController.add(line);
+  Future<bool> requestPermissions() async {
+    final mic = await Permission.microphone.request();
+    final ok = mic.isGranted;
+    if (!ok) _log('Permission micro refusée');
+    return ok;
   }
 
-  Future<void> init() async {
-    _log('Initializing intercom service…');
+  void setMode(ConnectionMode mode) {
+    _mode = mode;
+    _log('Mode sélectionné: ${_mode.name}');
+    _emitPeers();
+  }
 
-    // Permission micro
-    final mic = await Permission.microphone.request();
-    if (!mic.isGranted) {
-      throw Exception('Microphone permission denied');
-    }
+  void setInternetEndpoint({required String host, int? port}) {
+    _serverHost = host.trim();
+    if (port != null) _serverPort = port;
+    _serverAddress = null;
+    _log('Endpoint Internet: $_serverHost:$_serverPort');
+    _emitPeers();
+  }
 
-    // Socket UDP
-    _socket ??= await RawDatagramSocket.bind(
+  void setPeer(String ip) {
+    final addr = InternetAddress(ip.trim());
+    _lanPeers[addr.address] = PeerInfo(
+      name: 'Appareil',
+      address: addr,
+      port: _lanAudioPort,
+      isServer: false,
+    );
+    _lanLastSeen[addr.address] = DateTime.now();
+    _emitPeers();
+  }
+
+  Future<void> start() async {
+    if (_initialized) { _log('Déjà initialisé'); return; }
+
+    // Socket audio (réception)
+    _audioSock = await RawDatagramSocket.bind(
       InternetAddress.anyIPv4,
-      _port,
+      _lanAudioPort,
       reuseAddress: true,
       reusePort: true,
     );
-    _socket!.broadcastEnabled = true;
-    _socket!.readEventsEnabled = true;
-    _socket!.listen(_onUdpData);
+    _audioSock!.readEventsEnabled = true;
+    _audioSock!.listen(_onAudioUdp);
+    _log('Audio UDP: écoute sur 0.0.0.0:$_lanAudioPort');
 
-    // Collecte des IP locales (IPv4)
-    try {
-      final ifaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
-      _selfIps = ifaces.expand((i) => i.addresses).toSet();
-      _log('Local IPv4s: ${_selfIps.map((e) => e.address).join(', ')}');
-    } catch (e) {
-      _log('Failed to list local interfaces: $e');
-    }
+    // Démarre le lecteur natif (AudioTrack)
+    await _native.start(sampleRate: _sampleRate);
 
-    // Préparer le player en mode stream
-    await _player.openPlayer();
-    await _player.startPlayerFromStream(
-      codec: Codec.pcm16,
-      numChannels: 1,
-      sampleRate: 16000,
-      // Réduire la taille du tampon pour diminuer la latence perçue
-      bufferSize: 512,
-      interleaved: true,
+    // Découverte LAN
+    _discoverySock = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      _lanDiscoveryPort,
+      reuseAddress: true,
+      reusePort: true,
     );
-    _log('Audio player ready (PCM16/16kHz/mono).');
+    _discoverySock!.broadcastEnabled = true;
+    _discoverySock!.readEventsEnabled = true;
+    _discoverySock!.listen(_onDiscoveryUdp);
+    _log('Découverte UDP: écoute sur 0.0.0.0:$_lanDiscoveryPort');
 
-    // Nom d'annonce & handshake
-    try {
-      final wifiName = await NetworkInfo().getWifiName();
-      _deviceName = (wifiName ?? 'Omega Intercom')
-          .replaceAll(RegExp(r'[^A-Za-z0-9 _\-\.]'), '');
-      if (_deviceName.isEmpty) _deviceName = 'Omega Intercom';
-    } catch (_) {}
+    // Pings périodiques + purge
+    _helloTimer?.cancel();
+    _helloTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      _sendHello();
+      _purgeOldPeers();
+    });
+    _sendHello();
 
-    _startHelloLoop();
-
-    // mDNS : annonce + découverte
-    await _startMdns();
+    _initialized = true;
   }
 
-  // Méthode attendue par ton UI (Active l’intercom)
-  Future<void> start() async {
-    await init();
-    await startTalking();
-  }
-
-  // Capture micro + envoi UDP
   Future<void> startTalking() async {
-    if (await _recorder.hasPermission() != true) {
-      final ok = await Permission.microphone.request();
-      if (!ok.isGranted) throw Exception('Microphone permission denied');
+    if (!await requestPermissions()) {
+      throw Exception('Permission micro refusée');
+    }
+    if (!_initialized) await start();
+
+    if (_mode == ConnectionMode.internet) {
+      await _resolveServerIfNeeded();
+      if (_serverAddress == null) {
+        _log('Impossible de résoudre $_serverHost');
+        throw Exception('Serveur non résolu');
+      }
     }
 
-    const cfg = RecordConfig(
-      encoder: AudioEncoder.pcm16bits,
-      // 16 kHz reste lisible tout en limitant la latence.
-      // Pour encore moins de latence, on peut monter à 24000.
-      sampleRate: 16000,
-      numChannels: 1,
-      bitRate: 256000, // ignoré en PCM
+    // Micro « magnétophone » : PCM16 mono 16 kHz
+    final stream = await _recorder.startStream(
+      RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: _sampleRate,
+        numChannels: 1,
+      ),
     );
 
-    final stream = await _recorder.startStream(cfg);
-    _log('Microphone stream started (PCM16/16kHz/mono).');
     _micSub?.cancel();
     _micSub = stream.listen((Uint8List chunk) {
-      if (_peers.isEmpty) {
-        // Fallback: broadcast si aucun pair connu
-        try {
-          _socket?.send(chunk, InternetAddress('255.255.255.255'), _port);
-        } catch (e) {
-          _log('UDP broadcast error: $e');
+      try {
+        if (chunk.isEmpty) return;
+        // Prépare paquet avec en-tête mix-minus: 'IC' + version(1) + idLen(1) + selfId + PCM
+        final idBytes = utf8.encode(_selfId);
+        final headerLen = 4 + idBytes.length;
+        final data = Uint8List(headerLen + chunk.length);
+        final b = data.buffer.asUint8List();
+        // Magic 'I','C'
+        b[0] = 0x49; b[1] = 0x43; b[2] = 0x01; // version 1
+        b[3] = idBytes.length & 0xFF;
+        // id
+        b.setRange(4, 4 + idBytes.length, idBytes);
+        // payload PCM16
+        b.setRange(4 + idBytes.length, data.length, chunk);
+
+        if (_mode == ConnectionMode.lan) {
+          final peers = _lanPeers.values.toList(growable: false);
+          for (final p in peers) {
+            _audioSock?.send(data, p.address, p.port);
+          }
+        } else {
+          final dst = _serverAddress;
+          if (dst != null) _audioSock?.send(data, dst, _serverPort);
         }
-      }
-      for (final peer in _peers) {
-        try {
-          _socket?.send(chunk, peer, _port);
-        } catch (e) {
-          _log('UDP send error to ${peer.address}: $e');
-        }
+      } catch (e) {
+        _log('Erreur envoi UDP: $e');
       }
     });
+
+    _log('Capture micro démarrée → ${_mode == ConnectionMode.lan ? 'LAN' : 'Internet'}');
   }
 
   Future<void> stopTalking() async {
@@ -164,156 +235,221 @@ class IntercomService {
     if (await _recorder.isRecording()) {
       await _recorder.stop();
     }
-  }
-
-  void _onUdpData(RawSocketEvent ev) {
-    if (ev != RawSocketEvent.read) return;
-    final datagram = _socket?.receive();
-    if (datagram == null) return;
-
-    final src = datagram.address;
-    if (_selfIps.contains(src)) return; // ignorer nos propres paquets
-
-    // Détecter un handshake court (texte)
-    if (datagram.data.length <= 200) {
-      try {
-        final msg = utf8.decode(datagram.data, allowMalformed: true);
-        if (msg.startsWith(_helloHeader)) {
-          final parts = msg.split('|');
-          final name = parts.length >= 4 ? parts[3] : src.address;
-          _peers.add(src);
-          _peerNames[src] = name;
-          _peersCountController.add(_peers.length);
-          _peersController.add(_peerNames.entries
-              .map((e) => PeerInfo(e.key, e.value))
-              .toList(growable: false));
-          _log('HELLO from $name ${src.address}');
-          return;
-        } else if (msg.startsWith(_byeHeader)) {
-          _peers.remove(src);
-          _peerNames.remove(src);
-          _peersCountController.add(_peers.length);
-          _peersController.add(_peerNames.entries
-              .map((e) => PeerInfo(e.key, e.value))
-              .toList(growable: false));
-          _log('BYE from ${src.address}');
-          return;
-        }
-      } catch (_) {}
-    }
-
-    // Sinon: paquet audio PCM16
-    _player.uint8ListSink?.add(datagram.data);
-    _log('Received ${datagram.data.length} bytes from ${src.address}');
-  }
-
-  Future<void> _startMdns() async {
-    _broadcast = BonsoirBroadcast(
-      service: BonsoirService(
-        name: _deviceName,
-        type: _serviceType,
-        port: _port,
-      ),
-    );
-    await _broadcast!.initialize();
-    await _broadcast!.start();
-
-    _discovery = BonsoirDiscovery(type: _serviceType);
-    await _discovery!.initialize();
-    _discovery!.eventStream?.listen((event) async {
-      if (event is BonsoirDiscoveryServiceResolvedEvent) {
-        final srv = event.service;
-        final host = srv.host;
-        if (host != null && host.isNotEmpty) {
-          try {
-            final addresses = await InternetAddress.lookup(host);
-            for (final addr in addresses.where((a) => a.type == InternetAddressType.IPv4)) {
-              if (_selfIps.contains(addr)) continue;
-              _peers.add(addr);
-              _peerNames[addr] = srv.name ?? host;
-              _log('Peer discovered (mDNS): ${srv.name ?? host} -> ${addr.address}');
-            }
-          } catch (_) {}
-        }
-        _peersCountController.add(_peers.length);
-        _peersController.add(_peerNames.entries
-            .map((e) => PeerInfo(e.key, e.value))
-            .toList(growable: false));
-      } else if (event is BonsoirDiscoveryServiceLostEvent) {
-        final srv = event.service;
-        final host = srv.host;
-        if (host != null && host.isNotEmpty) {
-          try {
-            final addresses = await InternetAddress.lookup(host);
-            for (final addr in addresses.where((a) => a.type == InternetAddressType.IPv4)) {
-              _peers.remove(addr);
-              _peerNames.remove(addr);
-              _log('Peer lost (mDNS): ${srv.name ?? host} -> ${addr.address}');
-            }
-          } catch (_) {}
-        }
-        _peersCountController.add(_peers.length);
-        _peersController.add(_peerNames.entries
-            .map((e) => PeerInfo(e.key, e.value))
-            .toList(growable: false));
-      }
-    });
-    await _discovery!.start();
-  }
-
-  void _startHelloLoop() {
-    _sendHello();
-    _helloTimer?.cancel();
-    _helloTimer = Timer.periodic(const Duration(seconds: 2), (_) => _sendHello());
-  }
-
-  void _sendHello() {
-    try {
-      final payload = utf8.encode('$_helloHeader$_nodeId|$_deviceName');
-      _socket?.send(payload, InternetAddress('255.255.255.255'), _port);
-      for (final p in _peers) {
-        _socket?.send(payload, p, _port);
-      }
-    } catch (e) {
-      _log('HELLO send error: $e');
-    }
+    _log('Capture micro arrêtée');
   }
 
   Future<void> stop() async {
-    _log('Stopping intercom service…');
     await stopTalking();
-
-    try {
-      final bye = utf8.encode('$_byeHeader$_nodeId|$_deviceName');
-      _socket?.send(bye, InternetAddress('255.255.255.255'), _port);
-    } catch (_) {}
 
     _helloTimer?.cancel();
     _helloTimer = null;
 
-    _socket?.close();
-    _socket = null;
+    _discoverySock?.close();
+    _discoverySock = null;
 
-    await _player.stopPlayer();
-    await _player.closePlayer();
+    // Stop lecteur natif
+    await _native.stop();
 
-    await _broadcast?.stop();
-    await _discovery?.stop();
+    _audioSock?.close();
+    _audioSock = null;
 
-    _peers.clear();
-    _peerNames.clear();
-    _peersCountController.add(0);
-    _peersController.add(const <PeerInfo>[]);
-  }
+    _initialized = false;
+    _lanPeers.clear();
+    _lanLastSeen.clear();
+    _emitPeers();
 
-  Future<bool> requestPermissions() async {
-    final status = await Permission.microphone.request();
-    return status.isGranted;
+    _log('Intercom arrêté');
   }
 
   void dispose() {
-    _peersCountController.close();
-    _peersController.close();
-    _logController.close();
+    _logC.close();
+    _peersC.close();
+  }
+
+  // ========= UDP : réception audio =========
+  DateTime _lastRxLog = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _onAudioUdp(RawSocketEvent ev) {
+    if (ev != RawSocketEvent.read) return;
+    final dg = _audioSock?.receive();
+    if (dg == null) return;
+
+    final bytes = dg.data;
+
+    // Messages de contrôle serveur ? "ICSV1|PEERS|<n>"
+    try {
+      if (bytes.length >= 6 &&
+          bytes[0] == 0x49 && bytes[1] == 0x43 && // 'I','C'
+          bytes[2] == 0x53 && bytes[3] == 0x56 && bytes[4] == 0x31 && bytes[5] == 0x7C) { // 'S','V','1','|'
+        // Décodage texte sécurisé
+        final txt = utf8.decode(bytes, allowMalformed: true);
+        final parts = txt.split('|');
+        if (parts.length >= 3 && parts[1] == 'PEERS') {
+          final n = int.tryParse(parts[2]) ?? 0;
+          if (n != _internetPeerCount) {
+            _internetPeerCount = n.clamp(0, 9999);
+            _emitPeers();
+          }
+        }
+        return; // paquet de contrôle consommé
+      }
+    } catch (_) {/* ignore */}
+
+    // Parse en-tête audio mix-minus si présent: 'IC' 0x01 idLen id payload
+    Uint8List payload;
+    try {
+      if (bytes.length >= 4 && bytes[0] == 0x49 && bytes[1] == 0x43 && bytes[2] == 0x01) {
+        final idLen = bytes[3] & 0xFF;
+        if (bytes.length >= 4 + idLen) {
+          final senderId = utf8.decode(bytes.sublist(4, 4 + idLen));
+          if (senderId == _selfId) {
+            // C'est notre propre flux → ignorer (mix-minus)
+            return;
+          }
+          payload = bytes.sublist(4 + idLen);
+        } else {
+          // En-tête corrompu → traiter comme brut
+          payload = bytes;
+        }
+      } else {
+        // Ancien format (pas d'en-tête)
+        payload = bytes;
+      }
+    } catch (_) {
+      payload = bytes;
+    }
+
+    // On pousse le PCM16 dans le lecteur natif
+    if (payload.isNotEmpty) {
+      _native.write(payload);
+    }
+
+    // Logs
+    final now = DateTime.now();
+    if (now.difference(_lastRxLog).inMilliseconds > 500) {
+      _lastRxLog = now;
+      _log('RX ${dg.data.length} bytes de ${dg.address.address}:${dg.port}');
+    }
+
+    // MAJ "vu"
+    if (_mode == ConnectionMode.lan) {
+      final ip = dg.address.address;
+      if (!_lanPeers.containsKey(ip)) {
+        _lanPeers[ip] = PeerInfo(
+          name: 'Appareil',
+          address: dg.address,
+          port: dg.port,
+          isServer: false,
+        );
+        _emitPeers();
+      }
+      _lanLastSeen[ip] = DateTime.now();
+    }
+  }
+
+  // ========= UDP : découverte LAN =========
+  void _onDiscoveryUdp(RawSocketEvent ev) {
+    if (ev != RawSocketEvent.read) return;
+    final dg = _discoverySock?.receive();
+    if (dg == null) return;
+
+    try {
+      final txt = utf8.decode(dg.data);
+      final parts = txt.split('|');
+      if (parts.length < 4) return;
+
+      final cmd = parts[0];
+      final peerId = parts[1];
+      if (peerId == _selfId) return;
+
+      final peerPort = int.tryParse(parts[2]) ?? _lanAudioPort;
+      final peerName = parts.sublist(3).join('|');
+      final ip = dg.address.address;
+
+      _lanPeers[ip] = PeerInfo(
+        name: (peerName.isEmpty ? 'Appareil' : peerName),
+        address: dg.address,
+        port: peerPort,
+        isServer: false,
+      );
+      _lanLastSeen[ip] = DateTime.now();
+      _emitPeers();
+
+      if (cmd == 'HELLO') {
+        final reply = 'HERE|$_selfId|$_lanAudioPort|Appareil';
+        _discoverySock?.send(utf8.encode(reply), dg.address, _lanDiscoveryPort);
+      }
+    } catch (_) {/* ignore */}
+  }
+
+  void _sendHello() {
+    if (_discoverySock == null) return;
+    final msg = 'HELLO|$_selfId|$_lanAudioPort|Appareil';
+    final bytes = utf8.encode(msg);
+    final bcast = InternetAddress('255.255.255.255');
+    _discoverySock!.send(bytes, bcast, _lanDiscoveryPort);
+
+    for (final p in _lanPeers.values) {
+      _discoverySock!.send(
+        utf8.encode('HERE|$_selfId|$_lanAudioPort|Appareil'),
+        p.address,
+        _lanDiscoveryPort,
+      );
+    }
+  }
+
+  void _purgeOldPeers() {
+    final now = DateTime.now();
+    final toRemove = <String>[];
+    _lanLastSeen.forEach((ip, ts) {
+      if (now.difference(ts) > const Duration(seconds: 6)) {
+        toRemove.add(ip);
+      }
+    });
+    for (final ip in toRemove) {
+      _lanLastSeen.remove(ip);
+      _lanPeers.remove(ip);
+    }
+    if (toRemove.isNotEmpty) _emitPeers();
+  }
+
+  // ========= Internet (DNS) =========
+  Future<void> _resolveServerIfNeeded() async {
+    if (_serverAddress != null || _serverHost == null || _serverHost!.isEmpty) {
+      _emitPeers();
+      return;
+    }
+    final parsed = InternetAddress.tryParse(_serverHost!);
+    if (parsed != null) {
+      _serverAddress = parsed;
+      _emitPeers();
+      return;
+    }
+    try {
+      final list = await InternetAddress.lookup(_serverHost!);
+      _serverAddress = list.firstWhere(
+            (a) => a.type == InternetAddressType.IPv4,
+        orElse: () => list.first,
+      );
+      _emitPeers();
+    } catch (_) {
+      _emitPeers();
+    }
+  }
+
+  void _emitPeers() {
+    if (_mode == ConnectionMode.internet) {
+      // Publie une liste factice représentant les pairs distants (n-1 car on s'inclut dans _internetPeerCount)
+      final countOthers = (_internetPeerCount - 1).clamp(0, 9999);
+      final list = List<PeerInfo>.generate(countOthers, (i) => PeerInfo(
+        name: 'Participant ${i + 1}',
+        address: _serverAddress ?? InternetAddress.anyIPv4,
+        port: _serverPort,
+        isServer: false,
+      ));
+      _peersC.add(list);
+    } else {
+      _peersC.add(_lanPeers.values.toList(growable: false));
+    }
   }
 }

@@ -16,15 +16,12 @@ dependencies:
   flutter_google_places_sdk: ^0.4.2+1
 
   # --- Plugins Intercom mis à jour ---
-  multicast_dns: ^0.3.2+2
-  # On remplace mic_stream par ces deux plugins plus modernes
   permission_handler: ^11.3.1 # Pour gérer toutes les permissions
   record: ^6.1.1             # Pour enregistrer l'audio
   flutter_sound: ^9.3.0
-  bonsoir: ^6.0.1
-  network_info_plus: ^6.0.1
 
   cupertino_icons: ^1.0.6
+  audio_session: ^0.2.2
 
 dev_dependencies:
   flutter_test:

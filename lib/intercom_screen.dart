@@ -12,53 +12,112 @@ class IntercomScreen extends StatefulWidget {
 class _IntercomScreenState extends State<IntercomScreen> {
   final IntercomService _intercomService = IntercomService();
   bool _isIntercomActive = false;
-  String _statusText = "Intercom désactivé";
+  bool _isTalking = false;
+  String _statusText = 'Intercom désactivé';
   final List<String> _logs = <String>[];
   StreamSubscription<String>? _logSub;
+
+  ConnectionMode _mode = ConnectionMode.lan;
+  final TextEditingController _hostCtrl = TextEditingController(text: '93.1.78.21');
+  final TextEditingController _portCtrl = TextEditingController(text: '55667');
 
   @override
   void dispose() {
     _logSub?.cancel();
     _intercomService.stop();
+    _hostCtrl.dispose();
+    _portCtrl.dispose();
     super.dispose();
   }
 
-  void _toggleIntercom() async {
+  Future<void> _toggleIntercom() async {
     if (_isIntercomActive) {
+      if (_isTalking) {
+        try { await _intercomService.stopTalking(); } catch (_) {}
+        _isTalking = false;
+      }
       await _intercomService.stop();
       await _logSub?.cancel();
       _logSub = null;
       setState(() {
         _logs.clear();
         _isIntercomActive = false;
-        _statusText = "Intercom désactivé";
+        _statusText = 'Intercom désactivé';
       });
-    } else {
-      bool hasPermission = await _intercomService.requestPermissions();
+      return;
+    }
 
-      if (hasPermission) {
-        await _intercomService.start();
-        _logSub?.cancel();
-        _logSub = _intercomService.logStream.listen((line) {
-          setState(() {
-            _logs.add(line);
-            if (_logs.length > 200) {
-              _logs.removeRange(0, _logs.length - 200);
-            }
-          });
-        });
-        setState(() {
-          _isIntercomActive = true;
-          _statusText = "Recherche d'autres motards...";
-        });
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text("La permission du microphone est requise."),
-            backgroundColor: Colors.red,
-          ));
-        }
+    final hasPermission = await _intercomService.requestPermissions();
+    if (!hasPermission) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('La permission du microphone est requise.'),
+          backgroundColor: Colors.red,
+        ));
       }
+      return;
+    }
+
+    _intercomService.setMode(_mode);
+    if (_mode == ConnectionMode.internet) {
+      final host = _hostCtrl.text.trim();
+      final port = int.tryParse(_portCtrl.text.trim());
+      _intercomService.setInternetEndpoint(host: host, port: port);
+    }
+
+    await _intercomService.start();
+    // Full duplex: start capturing immediately
+    try {
+      await _intercomService.startTalking();
+      _isTalking = true;
+    } catch (_) {}
+
+    _logSub?.cancel();
+    _logSub = _intercomService.logStream.listen((line) {
+      setState(() {
+        _logs.add(line);
+        if (_logs.length > 200) {
+          _logs.removeRange(0, _logs.length - 200);
+        }
+      });
+    });
+
+    setState(() {
+      _isIntercomActive = true;
+      _statusText = _mode == ConnectionMode.lan
+          ? "Recherche des appareils sur le réseau local..."
+          : "Connexion via Internet...";
+    });
+  }
+
+  Future<void> _startTalking() async {
+    if (!_isIntercomActive) return;
+    try {
+      await _intercomService.startTalking();
+      if (mounted) {
+        setState(() {
+          _isTalking = true;
+          _statusText = 'Maintenez pour parler (actif)';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erreur demarrage micro: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _stopTalking() async {
+    try {
+      await _intercomService.stopTalking();
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        _isTalking = false;
+        _statusText = "Relachez pour arreter de parler";
+      });
     }
   }
 
@@ -89,10 +148,114 @@ class _IntercomScreenState extends State<IntercomScreen> {
               ),
               const SizedBox(height: 20),
 
+              if (_isIntercomActive)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
+                    children: [
+                      GestureDetector(
+                        onTapDown: (_) { _startTalking(); },
+                        onTapUp:   (_) { _stopTalking(); },
+                        onTapCancel: () { _stopTalking(); },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 120),
+                          width: 120,
+                          height: 120,
+                          decoration: BoxDecoration(
+                            color: _isTalking
+                                ? Colors.redAccent
+                                : Theme.of(context).colorScheme.primary,
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.2),
+                                blurRadius: 12,
+                                spreadRadius: 2,
+                                offset: const Offset(0, 6),
+                              ),
+                            ],
+                          ),
+                          child: Icon(
+                            _isTalking ? Icons.mic : Icons.mic_none,
+                            size: 56,
+                            color: Theme.of(context).colorScheme.onPrimary,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        _isTalking
+                            ? 'Parole en cours… (maintenir)'
+                            : 'Appuyez et maintenez pour parler',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
+                  ),
+                ),
+
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Mode de connexion'),
+                    const SizedBox(height: 8),
+                    SegmentedButton<ConnectionMode>(
+                      segments: const [
+                        ButtonSegment(
+                          value: ConnectionMode.lan,
+                          label: Text('Local (LAN)'),
+                          icon: Icon(Icons.wifi_tethering),
+                        ),
+                        ButtonSegment(
+                          value: ConnectionMode.internet,
+                          label: Text('Internet'),
+                          icon: Icon(Icons.public),
+                        ),
+                      ],
+                      selected: <ConnectionMode>{_mode},
+                      onSelectionChanged: _isIntercomActive
+                          ? null
+                          : (s) => setState(() => _mode = s.first),
+                    ),
+                    const SizedBox(height: 12),
+                    if (_mode == ConnectionMode.internet)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _hostCtrl,
+                              enabled: !_isIntercomActive,
+                              decoration: const InputDecoration(
+                                labelText: 'Hôte',
+                                hintText: '93.1.78.21',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          SizedBox(
+                            width: 120,
+                            child: TextField(
+                              controller: _portCtrl,
+                              enabled: !_isIntercomActive,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'Port',
+                                hintText: '55667',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+
               ElevatedButton.icon(
                 onPressed: _toggleIntercom,
                 icon: Icon(_isIntercomActive ? Icons.stop : Icons.play_arrow),
-                label: Text(_isIntercomActive ? 'Désactiver' : 'Activer l\'intercom'),
+                label: Text(_isIntercomActive ? 'Désactiver' : "Activer l'intercom"),
                 style: ElevatedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
                   textStyle: const TextStyle(fontSize: 18),
@@ -114,31 +277,38 @@ class _IntercomScreenState extends State<IntercomScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text("Participants connectés : $total"),
+                          if (_mode == ConnectionMode.lan)
+                            Text('Participants connectés (LAN) : $total')
+                          else ...[
+                            Text('Internet: connecté à ${_hostCtrl.text}:${_portCtrl.text}'),
+                            const SizedBox(height: 4),
+                            Text('Participants connectés (Internet) : $total'),
+                          ],
                           const SizedBox(height: 8),
-                          Container(
-                            constraints: const BoxConstraints(maxHeight: 140),
-                            child: ListView.builder(
-                              shrinkWrap: true,
-                              itemCount: peers.length,
-                              itemBuilder: (context, index) {
-                                final p = peers[index];
-                                return ListTile(
-                                  dense: true,
-                                  leading: const Icon(Icons.smartphone),
-                                  title: Text(p.name.isEmpty ? 'Appareil' : p.name),
-                                  subtitle: Text(p.address.address),
-                                );
-                              },
+                          if (_mode == ConnectionMode.lan)
+                            Container(
+                              constraints: const BoxConstraints(maxHeight: 140),
+                              child: ListView.builder(
+                                shrinkWrap: true,
+                                itemCount: peers.length,
+                                itemBuilder: (context, index) {
+                                  final p = peers[index];
+                                  return ListTile(
+                                    dense: true,
+                                    leading: const Icon(Icons.smartphone),
+                                    title: Text(p.name.isEmpty ? 'Appareil' : p.name),
+                                    subtitle: Text(p.address.address),
+                                  );
+                                },
+                              ),
                             ),
-                          ),
                         ],
                       ),
                     );
                   },
                 )
               else
-                const Text("Participants connectés : 0"),
+                const Text('Participants connectés : 0'),
 
               const SizedBox(height: 16),
 
@@ -148,7 +318,7 @@ class _IntercomScreenState extends State<IntercomScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Logs'),
+                      const Text('Logs'),
                       const SizedBox(height: 8),
                       Container(
                         height: 200,
@@ -185,4 +355,3 @@ class _IntercomScreenState extends State<IntercomScreen> {
     );
   }
 }
-
