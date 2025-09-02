@@ -15,11 +15,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   double _mic = 1.0;
   int _color = 0xFF3F51B5;
   double _duck = 0.15;
-  int _gate = 180;
+  double _gateNorm = 0.18;
   int _micLowCut = 0;
   int _micHighCut = 0;
   int _playLowCut = 0;
   int _playHighCut = 0;
+  bool _echoEnabled = false;
+  double _echoStrength = 0.6;
 
   @override
   void initState() {
@@ -29,11 +31,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _mic = widget.intercom.micGain;
     _color = widget.intercom.avatarColor;
     _duck = widget.intercom.duckFactor;
-    _gate = widget.intercom.gateLevel;
+    _gateNorm = widget.intercom.gateThreshold;
     _micLowCut = widget.intercom.micLowCutHz;
     _micHighCut = widget.intercom.micHighCutHz;
     _playLowCut = widget.intercom.playbackLowCutHz;
     _playHighCut = widget.intercom.playbackHighCutHz;
+    _echoEnabled = widget.intercom.echoSuppressEnabled;
+    _echoStrength = widget.intercom.echoSuppressStrength;
   }
 
   @override
@@ -63,6 +67,111 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // Live VU-meters
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Niveau micro (seuil glissable)'),
+                    const SizedBox(height: 6),
+                    StreamBuilder<double>(
+                      stream: widget.intercom.micLevelStream,
+                      initialData: 0.0,
+                      builder: (context, snap) {
+                        final v = (snap.data ?? 0.0).clamp(0.0, 1.0);
+                        return LayoutBuilder(
+                          builder: (context, constraints) {
+                            final w = constraints.maxWidth;
+                            final h = 14.0;
+                            final levelW = (v * w).clamp(0.0, w);
+                            final thrW = (_gateNorm * w).clamp(0.0, w);
+                            return GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onPanDown: (d) {
+                                final x = d.localPosition.dx.clamp(0.0, w);
+                                final t = (x / w).clamp(0.0, 1.0);
+                                setState(() => _gateNorm = t);
+                                widget.intercom.setGateThreshold(t);
+                              },
+                              onPanUpdate: (d) {
+                                final x = d.localPosition.dx.clamp(0.0, w);
+                                final t = (x / w).clamp(0.0, 1.0);
+                                setState(() => _gateNorm = t);
+                                widget.intercom.setGateThreshold(t);
+                              },
+                              child: SizedBox(
+                                width: w,
+                                height: h + 12,
+                                child: Stack(
+                                  alignment: Alignment.centerLeft,
+                                  children: [
+                                    Container(
+                                      width: w,
+                                      height: h,
+                                      decoration: BoxDecoration(
+                                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                    ),
+                                    Positioned(
+                                      left: 0,
+                                      child: Container(
+                                        width: levelW,
+                                        height: h,
+                                        decoration: BoxDecoration(
+                                          color: Colors.green,
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                      ),
+                                    ),
+                                    // Threshold marker
+                                    Positioned(
+                                      left: thrW - 6,
+                                      child: Container(
+                                        width: 12,
+                                        height: h + 6,
+                                        decoration: BoxDecoration(
+                                          color: Colors.orange,
+                                          borderRadius: BorderRadius.circular(3),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 4),
+                    Text('Seuil: ${(_gateNorm * 100).toStringAsFixed(0)}%'),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Niveau haut-parleur'),
+                    const SizedBox(height: 4),
+                    StreamBuilder<double>(
+                      stream: widget.intercom.outLevelStream,
+                      initialData: 0.0,
+                      builder: (context, snap) {
+                        final v = (snap.data ?? 0.0).clamp(0.0, 1.0);
+                        return LinearProgressIndicator(value: v);
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
           Row(
             children: [
               CircleAvatar(
@@ -117,9 +226,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (v) => setState(() => _mic = v),
           ),
           const SizedBox(height: 20),
-          const Text('Reduction du larsen'),
+          const Text('Reduction du larsen (ducker)'),
           const SizedBox(height: 6),
-          const Text('Attenuation pendant que je parle (ducker)', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          const Text('Attenuation pendant que je parle (0% = aucune, 100% = muet)', style: TextStyle(fontSize: 12, color: Colors.grey)),
           Slider(
             value: _duck,
             min: 0.0,
@@ -129,15 +238,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (v) => setState(() => _duck = v),
           ),
           const SizedBox(height: 6),
-          const Text('Seuil anti-larsen (gate) — plus haut = coupe plus', style: TextStyle(fontSize: 12, color: Colors.grey)),
-          Slider(
-            value: _gate.toDouble(),
-            min: 0,
-            max: 1000,
-            divisions: 50,
-            label: _gate.toString(),
-            onChanged: (v) => setState(() => _gate = v.round()),
-          ),
+          // L'ancien slider de seuil est remplacé par le curseur sur le vu-mètre
           const SizedBox(height: 12),
           const Divider(),
           const SizedBox(height: 8),
@@ -203,6 +304,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (v) => setState(() => _playHighCut = v.round()),
           ),
           const SizedBox(height: 12),
+          const Divider(),
+          const SizedBox(height: 8),
+          const Text('Anti-écho (réduction micro quand le haut-parleur joue)', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Activer anti-écho'),
+              Switch(
+                value: _echoEnabled,
+                onChanged: (v) => setState(() => _echoEnabled = v),
+              ),
+            ],
+          ),
+          if (_echoEnabled) ...[
+            const SizedBox(height: 6),
+            const Text('Intensité (0 = léger, 1 = très fort)', style: TextStyle(fontSize: 12, color: Colors.grey)),
+            Slider(
+              value: _echoStrength,
+              min: 0.0,
+              max: 1.0,
+              divisions: 20,
+              label: _echoStrength.toStringAsFixed(2),
+              onChanged: (v) => setState(() => _echoStrength = v),
+            ),
+          ],
+          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
@@ -233,11 +361,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await widget.intercom.setMasterGain(_master);
     await widget.intercom.setMicGain(_mic);
     await widget.intercom.setDuckFactor(_duck);
-    await widget.intercom.setGateLevel(_gate);
+    await widget.intercom.setGateThreshold(_gateNorm);
     await widget.intercom.setMicLowCutHz(_micLowCut);
     await widget.intercom.setMicHighCutHz(_micHighCut);
     await widget.intercom.setPlaybackLowCutHz(_playLowCut);
     await widget.intercom.setPlaybackHighCutHz(_playHighCut);
+    await widget.intercom.setEchoSuppressEnabled(_echoEnabled);
+    await widget.intercom.setEchoSuppressStrength(_echoStrength);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Parametres enregistres')),
@@ -255,11 +385,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _master = widget.intercom.masterGain;
       _mic = widget.intercom.micGain;
       _duck = widget.intercom.duckFactor;
-      _gate = widget.intercom.gateLevel;
+      _gateNorm = widget.intercom.gateThreshold;
       _micLowCut = widget.intercom.micLowCutHz;
       _micHighCut = widget.intercom.micHighCutHz;
       _playLowCut = widget.intercom.playbackLowCutHz;
       _playHighCut = widget.intercom.playbackHighCutHz;
+      _echoEnabled = widget.intercom.echoSuppressEnabled;
+      _echoStrength = widget.intercom.echoSuppressStrength;
     });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Parametres reinitialises')),

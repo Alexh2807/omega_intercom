@@ -22,6 +22,7 @@ class MapScreen extends StatefulWidget {
 class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final Completer<GoogleMapController> _controller = Completer();
   final FocusNode _searchFocusNode = FocusNode();
+  final TextEditingController _searchCtrl = TextEditingController();
 
   static const CameraPosition _kDefaultPosition = CameraPosition(
     target: LatLng(48.8566, 2.3522),
@@ -50,6 +51,12 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _loadMapStyle();
     _determinePosition();
+    _searchCtrl.addListener(() {
+      _onSearchChanged(_searchCtrl.text);
+    });
+    _searchCtrl.addListener(() {
+      _onSearchChanged(_searchCtrl.text);
+    });
   }
 
   @override
@@ -241,6 +248,9 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     setState(() {
       _predictions = [];
       _searchFocusNode.unfocus();
+      _selectedPlaceDescription = prediction.fullText;
+      _searchCtrl.text = _selectedPlaceDescription;
+      _searchCtrl.selection = TextSelection.fromPosition(TextPosition(offset: _selectedPlaceDescription.length));
     });
 
     final placeDetails = await places.fetchPlace(prediction.placeId, fields: [places_sdk.PlaceField.Location]);
@@ -256,6 +266,8 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _searchFocusNode.dispose();
+    _searchCtrl.dispose();
+    _searchCtrl.dispose();
     _debounce?.cancel();
     super.dispose();
   }
@@ -265,9 +277,16 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Stack(
+      resizeToAvoidBottomInset: false,
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          if (_searchFocusNode.hasFocus) _searchFocusNode.unfocus();
+          if (_predictions.isNotEmpty) setState(() => _predictions = []);
+        },
+        child: Stack(
         children: [
-          GoogleMap(
+          RepaintBoundary(child: GoogleMap(
             mapType: MapType.normal,
             style: _mapStyle,
             initialCameraPosition: _kDefaultPosition,
@@ -279,7 +298,7 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             onMapCreated: (GoogleMapController controller) {
               _controller.complete(controller);
             },
-          ),
+          )),
           Positioned(
             top: MediaQuery.of(context).padding.top + 15,
             left: 15,
@@ -292,9 +311,15 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     borderRadius: BorderRadius.circular(30),
                     boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4))],
                   ),
-                  child: TextField(
+                  child: Focus(
+                    onFocusChange: (has) {
+                      if (!has && _predictions.isNotEmpty) {
+                        setState(() => _predictions = []);
+                      }
+                    },
+                    child: TextField(
                     focusNode: _searchFocusNode,
-                    onChanged: _onSearchChanged,
+                    controller: _searchCtrl,
                     decoration: InputDecoration(
                       hintText: 'Où allez-vous ?',
                       border: InputBorder.none,
@@ -304,24 +329,28 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                           ? IconButton(icon: const Icon(Icons.close), onPressed: _cancelRoute)
                           : null,
                     ),
-                    controller: TextEditingController(text: _selectedPlaceDescription)..selection = TextSelection.fromPosition(TextPosition(offset: _selectedPlaceDescription.length)),
-                  ),
+                    textInputAction: TextInputAction.search,
+                    enableSuggestions: true,
+                    autocorrect: true,)),
                 ),
                 if (_predictions.isNotEmpty)
                   Material(
                     elevation: 8,
                     borderRadius: BorderRadius.circular(15),
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: _predictions.length,
-                      itemBuilder: (context, index) {
-                        final prediction = _predictions[index];
-                        return ListTile(
-                          title: Text(prediction.primaryText),
-                          subtitle: Text(prediction.secondaryText),
-                          onTap: () => _onPredictionTapped(prediction),
-                        );
-                      },
+                    child: SizedBox(
+                      height: 240,
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: _predictions.length,
+                        itemBuilder: (context, index) {
+                          final prediction = _predictions[index];
+                          return ListTile(
+                            title: Text(prediction.primaryText),
+                            subtitle: Text(prediction.secondaryText),
+                            onTap: () => _onPredictionTapped(prediction),
+                          );
+                        },
+                      ),
                     ),
                   ),
               ],
@@ -342,6 +371,7 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               onCancel: _cancelRoute,
             ),
         ],
+      ),
       ),
       // --- MODIFICATION DES BOUTONS FLOTTANTS ---
       floatingActionButton: Column(
@@ -371,3 +401,6 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 }
+
+
+

@@ -104,28 +104,24 @@ class MainActivity : FlutterActivity() {
         running.set(true)
 
         val am = audioManager ?: (getSystemService(Context.AUDIO_SERVICE) as AudioManager).also { audioManager = it }
-        // Préférer intercom Bluetooth SCO si dispo, sinon fallback haut-parleur
+        // Force haut-parleur
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val devices = am.availableCommunicationDevices
-                val btSco = devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
-                if (btSco != null) {
-                    am.setCommunicationDevice(btSco)
+                val speaker = devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                if (speaker != null) {
+                    am.setCommunicationDevice(speaker)
                 } else {
-                    val speaker = devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                    if (speaker != null) am.setCommunicationDevice(speaker)
+                    @Suppress("DEPRECATION")
+                    am.mode = AudioManager.MODE_IN_COMMUNICATION
+                    @Suppress("DEPRECATION")
+                    am.isSpeakerphoneOn = true
                 }
             } else {
                 @Suppress("DEPRECATION")
                 run {
                     am.mode = AudioManager.MODE_IN_COMMUNICATION
-                    if (am.isBluetoothScoAvailableOffCall) {
-                        try { am.startBluetoothSco(); } catch (_: Throwable) {}
-                        @Suppress("DEPRECATION") am.isBluetoothScoOn = true
-                        @Suppress("DEPRECATION") am.isSpeakerphoneOn = false
-                    } else {
-                        @Suppress("DEPRECATION") am.isSpeakerphoneOn = true
-                    }
+                    am.isSpeakerphoneOn = true
                 }
             }
             // Diriger les touches volume sur la sortie voix/appareil
@@ -238,3 +234,4 @@ class MainActivity : FlutterActivity() {
         }
     }
 }
+

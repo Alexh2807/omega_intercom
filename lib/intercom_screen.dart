@@ -17,6 +17,8 @@ class _IntercomScreenState extends State<IntercomScreen> {
   String _statusText = 'Intercom désactivé';
   final List<String> _logs = <String>[];
   StreamSubscription<String>? _logSub;
+  Timer? _logFlushTimer;
+  final List<String> _pendingLogs = <String>[];
 
   ConnectionMode _mode = ConnectionMode.lan;
   final TextEditingController _hostCtrl = TextEditingController(text: '93.1.78.21');
@@ -24,9 +26,38 @@ class _IntercomScreenState extends State<IntercomScreen> {
   final TextEditingController _aliasCtrl = TextEditingController();
 
   @override
+  void initState() {
+    super.initState();
+    // Refléter l'état courant du service (singleton)
+    _isIntercomActive = _intercomService.isInitialized;
+    _isTalking = _intercomService.isTalking;
+    _statusText = _isIntercomActive
+        ? (_isTalking ? 'Micro actif' : 'Intercom actif')
+        : 'Intercom désactivé';
+    // Brancher les logs si actif
+    if (_isIntercomActive) {
+      _logSub?.cancel();
+      _logSub = _intercomService.logStream.listen((line) {
+        _pendingLogs.add(line);
+        _logFlushTimer ??= Timer.periodic(const Duration(milliseconds: 200), (_) {
+          if (!mounted) return;
+          if (_pendingLogs.isEmpty) return;
+          setState(() {
+            _logs.addAll(_pendingLogs);
+            _pendingLogs.clear();
+            if (_logs.length > 200) {
+              _logs.removeRange(0, _logs.length - 200);
+            }
+          });
+        });
+      });
+    }
+  }
+
+  @override
   void dispose() {
     _logSub?.cancel();
-    _intercomService.stop();
+    _logFlushTimer?.cancel();
     _hostCtrl.dispose();
     _portCtrl.dispose();
     _aliasCtrl.dispose();
@@ -150,11 +181,17 @@ class _IntercomScreenState extends State<IntercomScreen> {
 
     _logSub?.cancel();
     _logSub = _intercomService.logStream.listen((line) {
-      setState(() {
-        _logs.add(line);
-        if (_logs.length > 200) {
-          _logs.removeRange(0, _logs.length - 200);
-        }
+      _pendingLogs.add(line);
+      _logFlushTimer ??= Timer.periodic(const Duration(milliseconds: 200), (_) {
+        if (!mounted) return;
+        if (_pendingLogs.isEmpty) return;
+        setState(() {
+          _logs.addAll(_pendingLogs);
+          _pendingLogs.clear();
+          if (_logs.length > 200) {
+            _logs.removeRange(0, _logs.length - 200);
+          }
+        });
       });
     });
 
@@ -241,9 +278,13 @@ class _IntercomScreenState extends State<IntercomScreen> {
                   child: Column(
                     children: [
                       GestureDetector(
-                        onTapDown: (_) { _startTalking(); },
-                        onTapUp:   (_) { _stopTalking(); },
-                        onTapCancel: () { _stopTalking(); },
+                        onTap: () async {
+                          if (_isTalking) {
+                            await _stopTalking();
+                          } else {
+                            await _startTalking();
+                          }
+                        },
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 120),
                           width: 120,
@@ -272,8 +313,8 @@ class _IntercomScreenState extends State<IntercomScreen> {
                       const SizedBox(height: 12),
                       Text(
                         _isTalking
-                            ? 'Parole en cours… (maintenir)'
-                            : 'Appuyez et maintenez pour parler',
+                            ? 'Micro actif (touchez pour couper)'
+                            : 'Touchez pour activer le micro',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ],
@@ -453,6 +494,15 @@ class _IntercomScreenState extends State<IntercomScreen> {
     );
   }
 }
+
+
+
+
+
+
+
+
+
 
 
 
