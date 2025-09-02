@@ -7,7 +7,7 @@ const dgram = require('dgram');
 const server = dgram.createSocket('udp4');
 
 // Clients { key -> { address, port, lastSeen } }
-const clients = new Map();
+const clients = new Map(); // key -> { address, port, lastSeen, id, name }
 const PEER_TTL_MS = 15000; // 15s sans trafic => purge
 
 function keyOf(rinfo) { return `${rinfo.address}:${rinfo.port}`; }
@@ -31,11 +31,31 @@ server.on('message', (msg, rinfo) => {
   const key = keyOf(rinfo);
 
   const isNew = !clients.has(key);
-  clients.set(key, { address: rinfo.address, port: rinfo.port, lastSeen: Date.now() });
+  const entry = clients.get(key) || { address: rinfo.address, port: rinfo.port };
+  entry.lastSeen = Date.now();
+  clients.set(key, entry);
   if (isNew) {
     console.log(`➕ Nouveau client connecté : ${key}`);
     broadcastPeerCount();
   }
+
+  // Contrôle (présence) ?
+  try {
+    if (msg.length >= 6 && msg[0] === 0x49 && msg[1] === 0x43) { // 'I','C'
+      const txt = msg.toString('utf8');
+      if (txt.startsWith('ICSV1|PRES|')) {
+        const parts = txt.split('|');
+        const id = parts[2] || '';
+        const name = (parts.slice(3).join('|')) || '';
+        entry.id = id; entry.name = name;
+        // Rebroadcast presence to all
+        for (const c of clients.values()) {
+          server.send(msg, c.port, c.address, () => {});
+        }
+        return;
+      }
+    }
+  } catch (_) {}
 
   // Relayer le message vers tous les autres clients
   for (const [k, c] of clients.entries()) {
@@ -52,6 +72,13 @@ setInterval(() => {
   let removed = 0;
   for (const [k, c] of clients.entries()) {
     if (now - c.lastSeen > PEER_TTL_MS) {
+      // notifier départ
+      if (c.id) {
+        const gone = Buffer.from(`ICSV1|GONE|${c.id}`);
+        for (const v of clients.values()) {
+          server.send(gone, v.port, v.address, () => {});
+        }
+      }
       clients.delete(k);
       removed++;
     }
@@ -66,4 +93,3 @@ setInterval(() => {
 server.bind(55667, () => {
   console.log("🚀 Serveur relay intercom lancé !");
 });
-

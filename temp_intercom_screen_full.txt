@@ -21,6 +21,7 @@ class _IntercomScreenState extends State<IntercomScreen> {
   final TextEditingController _hostCtrl = TextEditingController(text: '93.1.78.21');
   final TextEditingController _portCtrl = TextEditingController(text: '55667');
   final TextEditingController _aliasCtrl = TextEditingController();
+  final TextEditingController _aliasCtrl = TextEditingController();
 
   @override
   void dispose() {
@@ -29,10 +30,11 @@ class _IntercomScreenState extends State<IntercomScreen> {
     _hostCtrl.dispose();
     _portCtrl.dispose();
     _aliasCtrl.dispose();
+    _aliasCtrl.dispose();
     super.dispose();
   }
 
-  Color _colorForKey_old(String key) {
+  Color _colorForKey(String key) {
     int hash = 0;
     for (int i = 0; i < key.length; i++) {
       hash = (hash * 31 + key.codeUnitAt(i)) & 0x7fffffff;
@@ -43,7 +45,7 @@ class _IntercomScreenState extends State<IntercomScreen> {
     return Color.fromARGB(255, r, g, b);
   }
 
-  void _showPeerControlsOld(PeerInfo p) {
+  void _showPeerControls(PeerInfo p) {
     bool muted = _intercomService.isMuted(p.id);
     double gain = _intercomService.gainOf(p.id);
     showModalBottomSheet(

@@ -55,6 +55,30 @@ class _NativePlayer {
       debugPrint('Native stop error: $e');
     }
   }
+
+  void _sendPresence() {
+    if (_mode != ConnectionMode.internet) return;
+    final dst = _serverAddress;
+    if (dst == null) return;
+    final msg = 'ICSV1|PRES|$_selfId|$_displayName';
+    _audioSock?.send(utf8.encode(msg), dst, _serverPort);
+  }
+
+  Uint8List _applyGainPcm16(Uint8List pcm, double gain) {
+    try {
+      final bd = ByteData.view(pcm.buffer, pcm.offsetInBytes, pcm.lengthInBytes);
+      for (int i = 0; i < pcm.lengthInBytes; i += 2) {
+        int s = bd.getInt16(i, Endian.little);
+        double v = s * gain;
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        bd.setInt16(i, v.toInt(), Endian.little);
+      }
+      return pcm;
+    } catch (_) {
+      return pcm;
+    }
+  }
 }
 
 class IntercomService {
@@ -290,31 +314,6 @@ class IntercomService {
     _peersC.close();
   }
 
-  // ========= Présence Internet et utilitaires audio =========
-  void _sendPresence() {
-    if (_mode != ConnectionMode.internet) return;
-    final dst = _serverAddress;
-    if (dst == null) return;
-    final msg = 'ICSV1|PRES|$_selfId|$_displayName';
-    _audioSock?.send(utf8.encode(msg), dst, _serverPort);
-  }
-
-  Uint8List _applyGainPcm16(Uint8List pcm, double gain) {
-    try {
-      final bd = ByteData.view(pcm.buffer, pcm.offsetInBytes, pcm.lengthInBytes);
-      for (int i = 0; i < pcm.lengthInBytes; i += 2) {
-        int s = bd.getInt16(i, Endian.little);
-        double v = s * gain;
-        if (v > 32767) v = 32767;
-        if (v < -32768) v = -32768;
-        bd.setInt16(i, v.toInt(), Endian.little);
-      }
-      return pcm;
-    } catch (_) {
-      return pcm;
-    }
-  }
-
   // ========= UDP : réception audio =========
   DateTime _lastRxLog = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -482,7 +481,7 @@ class IntercomService {
       _emitPeers();
 
       if (cmd == 'HELLO') {
-        final reply = 'HERE|$_selfId|$_lanAudioPort|$_displayName';
+        final reply = 'HERE|$_selfId|$_lanAudioPort|Appareil';
         _discoverySock?.send(utf8.encode(reply), dg.address, _lanDiscoveryPort);
       }
     } catch (_) {/* ignore */}
@@ -490,7 +489,7 @@ class IntercomService {
 
   void _sendHello() {
     if (_discoverySock == null) return;
-    final msg = 'HELLO|$_selfId|$_lanAudioPort|$_displayName';
+    final msg = 'HELLO|$_selfId|$_lanAudioPort|Appareil';
     final bytes = utf8.encode(msg);
     final bcast = InternetAddress('255.255.255.255');
     _discoverySock!.send(bytes, bcast, _lanDiscoveryPort);

@@ -1,0 +1,120 @@
+﻿import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:omega_intercom/intercom_service.dart';
+
+class IntercomScreen extends StatefulWidget {
+  const IntercomScreen({super.key});
+
+  @override
+  State<IntercomScreen> createState() => _IntercomScreenState();
+}
+
+class _IntercomScreenState extends State<IntercomScreen> {
+  final IntercomService _intercomService = IntercomService();
+  bool _isIntercomActive = false;
+  String _statusText = 'Intercom dÃ©sactivÃ©';
+  final List<String> _logs = <String>[];
+  StreamSubscription<String>? _logSub;
+
+  ConnectionMode _mode = ConnectionMode.lan;
+  final TextEditingController _hostCtrl = TextEditingController(text: '93.1.78.21');
+  final TextEditingController _portCtrl = TextEditingController(text: '55667');
+
+  @override
+  void dispose() {
+    _logSub?.cancel();
+    _intercomService.stop();
+    _hostCtrl.dispose();
+    _portCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggleIntercom() async {
+    if (_isIntercomActive) {
+      await _intercomService.stop();
+      await _logSub?.cancel();
+      _logSub = null;
+      setState(() {
+        _logs.clear();
+        _isIntercomActive = false;
+        _statusText = 'Intercom dÃ©sactivÃ©';
+      });
+      return;
+    }
+
+    final hasPermission = await _intercomService.requestPermissions();
+    if (!hasPermission) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('La permission du microphone est requise.'),
+          backgroundColor: Colors.red,
+        ));
+      }
+      return;
+    }
+
+    _intercomService.setMode(_mode);
+    if (_mode == ConnectionMode.internet) {
+      final host = _hostCtrl.text.trim();
+      final port = int.tryParse(_portCtrl.text.trim());
+      _intercomService.setInternetEndpoint(host: host, port: port);
+    }
+
+    await _intercomService.start();
+
+    _logSub?.cancel();
+    _logSub = _intercomService.logStream.listen((line) {
+      setState(() {
+        _logs.add(line);
+        if (_logs.length > 200) {
+          _logs.removeRange(0, _logs.length - 200);
+        }
+      });
+    });
+
+    setState(() {
+      _isIntercomActive = true;
+      _statusText = _mode == ConnectionMode.lan
+          ? "Recherche des appareils sur le rÃ©seau local..."
+          : "Connexion via Internet...";
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Omega Intercom'),
+        backgroundColor: Theme.of(context).colorScheme.primary,
+        foregroundColor: Theme.of(context).colorScheme.onPrimary,
+      ),
+      body: Center(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const SizedBox(height: 30),
+              Icon(
+                _isIntercomActive ? Icons.podcasts : Icons.mic_off_outlined,
+                size: 150,
+                color: _isIntercomActive ? Colors.green : Colors.grey,
+              ),
+              const SizedBox(height: 20),
+
+              Text(
+                _statusText,
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 20),
+
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Mode de connexion'),
+                    const SizedBox(height: 8),
+                    SegmentedButton<ConnectionMode>(
+                      segments: const [
+                        ButtonSegment(
+                          value: ConnectionMode.lan,

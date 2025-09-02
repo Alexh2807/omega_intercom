@@ -1,0 +1,18 @@
+{
+  "name": "omega-intercom-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "UDP audio relay for Omega Intercom (mix-minus client-side)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:dev": "node index.js --port 55667 --verbose",
+    "relay": "node udp_relay.js"
+  },
+  "keywords": ["udp", "audio", "intercom", "relay"],
+  "author": "",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=14"
+  }
+}

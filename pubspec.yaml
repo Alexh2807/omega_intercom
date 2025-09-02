@@ -19,6 +19,7 @@ dependencies:
   permission_handler: ^11.3.1 # Pour gérer toutes les permissions
   record: ^6.1.1             # Pour enregistrer l'audio
   flutter_sound: ^9.3.0
+  shared_preferences: ^2.3.2
 
   cupertino_icons: ^1.0.6
   audio_session: ^0.2.2

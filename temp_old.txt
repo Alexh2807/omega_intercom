@@ -1,0 +1,423 @@
+// lib/intercom_service.dart
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+
+import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_sound/flutter_sound.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';
+
+
+enum ConnectionMode { lan, internet }
+
+class PeerInfo {
+  final String name;
+  final InternetAddress address;
+  final int port;
+  final bool isServer;
+  const PeerInfo({
+    required this.name,
+    required this.address,
+    required this.port,
+    this.isServer = false,
+  });
+}
+
+class IntercomService {
+  // Audio
+  static const int _sampleRate = 48000;
+
+  // Ports
+  static const int _lanAudioPort = 50005;     // audio LAN (PCM16)
+  static const int _lanDiscoveryPort = 50004; // découverte LAN (texte)
+  static const int _defaultInternetPort = 55667;
+
+  // Réseau & audio
+  RawDatagramSocket? _audioSock;
+  RawDatagramSocket? _discoverySock;
+  final AudioRecorder _recorder = AudioRecorder();
+  final FlutterSoundPlayer _player = FlutterSoundPlayer();
+  StreamSubscription<Uint8List>? _micSub;
+
+  bool _initialized = false;
+  bool _playerStarted = false;
+
+  // Mode
+  ConnectionMode _mode = ConnectionMode.lan;
+
+  // Internet endpoint
+  String? _serverHost;
+  int _serverPort = _defaultInternetPort;
+  InternetAddress? _serverAddress;
+
+  // Découverte LAN
+  final String _selfId =
+      '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${Random().nextInt(0xFFFF).toRadixString(16)}';
+  final Map<String, PeerInfo> _lanPeers = {};    // ip -> PeerInfo
+  final Map<String, DateTime> _lanLastSeen = {}; // ip -> lastSeen
+  Timer? _helloTimer;
+
+  // Flux UI
+  final _logC = StreamController<String>.broadcast();
+  final _peersC = StreamController<List<PeerInfo>>.broadcast();
+  Stream<String> get logStream => _logC.stream;
+  Stream<List<PeerInfo>> get peersStream => _peersC.stream;
+  void _log(String m) { if (kDebugMode) print('[Intercom] $m'); _logC.add(m); }
+
+  // ===== API UI =====
+
+  Future<bool> requestPermissions() async {
+    final mic = await Permission.microphone.request();
+    final ok = mic.isGranted;
+    if (!ok) _log('Permission micro refusée');
+    return ok;
+  }
+
+  void setMode(ConnectionMode mode) {
+    _mode = mode;
+    _log('Mode sélectionné: ${_mode.name}');
+    _emitPeers();
+  }
+
+  void setInternetEndpoint({required String host, int? port}) {
+    _serverHost = host.trim();
+    if (port != null) _serverPort = port;
+    _serverAddress = null;
+    _log('Endpoint Internet: $_serverHost:$_serverPort');
+    _emitPeers();
+  }
+
+  void setPeer(String ip) {
+    final addr = InternetAddress(ip.trim());
+    _lanPeers[addr.address] = PeerInfo(
+      name: 'Appareil',
+      address: addr,
+      port: _lanAudioPort,
+      isServer: false,
+    );
+    _lanLastSeen[addr.address] = DateTime.now();
+    _emitPeers();
+  }
+
+  Future<void> _configureAudioSession() async {
+    final session = await AudioSession.instance;
+
+    // ?? PAS de `const` ici, sinon le `|` n'est pas autorisé à la compile.
+    final config = AudioSessionConfiguration(
+      // iOS
+      avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
+      avAudioSessionCategoryOptions:
+      AVAudioSessionCategoryOptions.allowBluetooth |
+      AVAudioSessionCategoryOptions.defaultToSpeaker,
+      avAudioSessionMode: AVAudioSessionMode.voiceChat,
+
+      // Android
+      androidAudioAttributes: const AndroidAudioAttributes(
+        usage: AndroidAudioUsage.voiceCommunication,
+        contentType: AndroidAudioContentType.speech,
+        flags: AndroidAudioFlags.none,
+      ),
+      androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+      androidWillPauseWhenDucked: false,
+    );
+
+    await session.configure(config);
+    await session.setActive(true);
+    _log('AudioSession configurée (play&record, speaker)');
+  }
+
+  Future<void> start() async {
+    if (_initialized) { _log('Déjà initialisé'); return; }
+
+    await _configureAudioSession();
+
+    // Socket audio (réception)
+    _audioSock = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      _lanAudioPort,
+      reuseAddress: true,
+      reusePort: true,
+    );
+    _audioSock!.readEventsEnabled = true;
+    _audioSock!.listen(_onAudioUdp);
+    _log('Audio UDP: écoute sur 0.0.0.0:$_lanAudioPort');
+
+    // Player (lecture du flux PCM16)
+    await _player.openPlayer();
+    if (!_playerStarted) {
+      await _player.startPlayerFromStream(
+        codec: Codec.pcm16,
+        numChannels: 1,
+        sampleRate: _sampleRate,
+        bufferSize: 2048,
+        interleaved: true,
+      );
+      await _player.setVolume(1.0); // volume max côté player
+      _playerStarted = true;
+      _log('Player prêt (PCM16 $_sampleRate Hz, volume=1.0)');
+    }
+
+    // Découverte LAN (broadcast)
+    _discoverySock = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      _lanDiscoveryPort,
+      reuseAddress: true,
+      reusePort: true,
+    );
+    _discoverySock!.broadcastEnabled = true;
+    _discoverySock!.readEventsEnabled = true;
+    _discoverySock!.listen(_onDiscoveryUdp);
+    _log('Découverte UDP: écoute sur 0.0.0.0:$_lanDiscoveryPort');
+
+    // Ping périodique + purge
+    _helloTimer?.cancel();
+    _helloTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      _sendHello();
+      _purgeOldPeers();
+    });
+    _sendHello();
+
+    _initialized = true;
+  }
+
+  Future<void> startTalking() async {
+    if (!await requestPermissions()) {
+      throw Exception('Permission micro refusée');
+    }
+    if (!_initialized) await start();
+
+    if (_mode == ConnectionMode.internet) {
+      await _resolveServerIfNeeded();
+      if (_serverAddress == null) {
+        _log('Impossible de résoudre $_serverHost');
+        throw Exception('Serveur non résolu');
+      }
+    }
+
+    final stream = await _recorder.startStream(
+      RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: _sampleRate,
+        numChannels: 1,
+        noiseSuppress: true,
+        echoCancel: true,
+        androidConfig: const AndroidRecordConfig(
+          audioSource: AndroidAudioSource.voiceCommunication,
+          audioManagerMode: AudioManagerMode.modeInCommunication,
+          speakerphone: true,
+        ),
+      ),
+    );
+
+    _micSub?.cancel();
+    _micSub = stream.listen((Uint8List chunk) {
+      try {
+        if (_mode == ConnectionMode.lan) {
+          final peers = _lanPeers.values.toList();
+          for (final p in peers) {
+            _audioSock?.send(chunk, p.address, p.port);
+          }
+        } else {
+          final dst = _serverAddress;
+          if (dst != null) _audioSock?.send(chunk, dst, _serverPort);
+        }
+      } catch (e) {
+        _log('Erreur envoi UDP: $e');
+      }
+    });
+
+    _log('Capture micro démarrée ? ${_mode == ConnectionMode.lan ? 'LAN' : 'Internet'}');
+  }
+
+  Future<void> stopTalking() async {
+    await _micSub?.cancel();
+    _micSub = null;
+    if (await _recorder.isRecording()) {
+      await _recorder.stop();
+    }
+    _log('Capture micro arrêtée');
+  }
+
+  Future<void> stop() async {
+    await stopTalking();
+
+    _helloTimer?.cancel();
+    _helloTimer = null;
+
+    _discoverySock?.close();
+    _discoverySock = null;
+
+    if (_playerStarted) {
+      await _player.stopPlayer();
+      await _player.closePlayer();
+      _playerStarted = false;
+    }
+
+    _audioSock?.close();
+    _audioSock = null;
+
+    _initialized = false;
+    _lanPeers.clear();
+    _lanLastSeen.clear();
+    _emitPeers();
+
+    _log('Intercom arrêté');
+  }
+
+  void dispose() {
+    _logC.close();
+    _peersC.close();
+  }
+
+  // ===== UDP handlers =====
+
+  DateTime _lastRxLog = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _onAudioUdp(RawSocketEvent ev) {
+    if (ev != RawSocketEvent.read) return;
+    final dg = _audioSock?.receive();
+    if (dg == null) return;
+
+    // Lire le flux PCM16
+    _player.foodSink?.add(FoodData(dg.data));
+
+    // Petit log (limité à 2/s pour éviter le spam)
+    final now = DateTime.now();
+    if (now.difference(_lastRxLog).inMilliseconds > 500) {
+      _lastRxLog = now;
+      _log('RX ${dg.data.length} bytes de ${dg.address.address}:${dg.port}');
+    }
+
+    // MAJ pair vu
+    if (_mode == ConnectionMode.lan) {
+      final ip = dg.address.address;
+      if (!_lanPeers.containsKey(ip)) {
+        _lanPeers[ip] = PeerInfo(
+          name: 'Appareil',
+          address: dg.address,
+          port: dg.port,
+          isServer: false,
+        );
+        _emitPeers();
+      }
+      _lanLastSeen[ip] = DateTime.now();
+    }
+  }
+
+  void _onDiscoveryUdp(RawSocketEvent ev) {
+    if (ev != RawSocketEvent.read) return;
+    final dg = _discoverySock?.receive();
+    if (dg == null) return;
+
+    try {
+      final txt = utf8.decode(dg.data);
+      final parts = txt.split('|');
+      if (parts.length < 4) return;
+
+      final cmd = parts[0];
+      final peerId = parts[1];
+      if (peerId == _selfId) return;
+
+      final peerPort = int.tryParse(parts[2]) ?? _lanAudioPort;
+      final peerName = parts.sublist(3).join('|');
+      final ip = dg.address.address;
+
+      _lanPeers[ip] = PeerInfo(
+        name: (peerName.isEmpty ? 'Appareil' : peerName),
+        address: dg.address,
+        port: peerPort,
+        isServer: false,
+      );
+      _lanLastSeen[ip] = DateTime.now();
+      _emitPeers();
+
+      if (cmd == 'HELLO') {
+        final reply = 'HERE|$_selfId|$_lanAudioPort|${_deviceLabel()}';
+        _discoverySock?.send(utf8.encode(reply), dg.address, _lanDiscoveryPort);
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  // ===== Découverte LAN =====
+
+  void _sendHello() {
+    if (_discoverySock == null) return;
+    final msg = 'HELLO|$_selfId|$_lanAudioPort|${_deviceLabel()}';
+    final bytes = utf8.encode(msg);
+    final bcast = InternetAddress('255.255.255.255');
+    _discoverySock!.send(bytes, bcast, _lanDiscoveryPort);
+
+    for (final p in _lanPeers.values) {
+      _discoverySock!.send(
+        utf8.encode('HERE|$_selfId|$_lanAudioPort|${_deviceLabel()}'),
+        p.address,
+        _lanDiscoveryPort,
+      );
+    }
+  }
+
+  void _purgeOldPeers() {
+    final now = DateTime.now();
+    final toRemove = <String>[];
+    _lanLastSeen.forEach((ip, ts) {
+      if (now.difference(ts) > const Duration(seconds: 6)) {
+        toRemove.add(ip);
+      }
+    });
+    for (final ip in toRemove) {
+      _lanLastSeen.remove(ip);
+      _lanPeers.remove(ip);
+    }
+    if (toRemove.isNotEmpty) _emitPeers();
+  }
+
+  String _deviceLabel() => 'Appareil';
+
+  // ===== Internet (DNS) =====
+
+  Future<void> _resolveServerIfNeeded() async {
+    if (_serverAddress != null || _serverHost == null || _serverHost!.isEmpty) {
+      _emitPeers();
+      return;
+    }
+    final parsed = InternetAddress.tryParse(_serverHost!);
+    if (parsed != null) {
+      _serverAddress = parsed;
+      _emitPeers();
+      return;
+    }
+    try {
+      final list = await InternetAddress.lookup(_serverHost!);
+      _serverAddress = list.firstWhere(
+            (a) => a.type == InternetAddressType.IPv4,
+        orElse: () => list.first,
+      );
+      _emitPeers();
+    } catch (e) {
+      _log('DNS lookup échoué pour $_serverHost: $e');
+      _emitPeers();
+    }
+  }
+
+  void _emitPeers() {
+    if (_mode == ConnectionMode.internet) {
+      final resolved =
+          _serverAddress ?? InternetAddress.tryParse(_serverHost ?? '');
+      _peersC.add([
+        PeerInfo(
+          name: 'Serveur',
+          address: resolved ?? InternetAddress.anyIPv4,
+          port: _serverPort,
+          isServer: true,
+        )
+      ]);
+    } else {
+      _peersC.add(_lanPeers.values.toList(growable: false));
+    }
+  }
+}
+
