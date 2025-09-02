@@ -5,9 +5,8 @@
   "description": "UDP audio relay for Omega Intercom (mix-minus client-side)",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "start:dev": "node index.js --port 55667 --verbose",
-    "relay": "node udp_relay.js"
+    "start": "node udp_relay.js",
+    "start:dev": "node udp_relay.js --port 55667 --verbose"
   },
   "keywords": ["udp", "audio", "intercom", "relay"],
   "author": "",

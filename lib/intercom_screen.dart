@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:omega_intercom/intercom_service.dart';
+import 'package:omega_intercom/settings_screen.dart';
 
 class IntercomScreen extends StatefulWidget {
   const IntercomScreen({super.key});
@@ -32,76 +33,6 @@ class _IntercomScreenState extends State<IntercomScreen> {
     super.dispose();
   }
 
-  Color _colorForKey_old(String key) {
-    int hash = 0;
-    for (int i = 0; i < key.length; i++) {
-      hash = (hash * 31 + key.codeUnitAt(i)) & 0x7fffffff;
-    }
-    final r = 100 + (hash & 0x7F);
-    final g = 100 + ((hash >> 7) & 0x7F);
-    final b = 100 + ((hash >> 14) & 0x7F);
-    return Color.fromARGB(255, r, g, b);
-  }
-
-  void _showPeerControlsOld(PeerInfo p) {
-    bool muted = _intercomService.isMuted(p.id);
-    double gain = _intercomService.gainOf(p.id);
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setSt) {
-            return Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Paramètres de ${p.name}', style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 10),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Muet'),
-                      Switch(
-                        value: muted,
-                        onChanged: (v) {
-                          setSt(() => muted = v);
-                          _intercomService.setMuted(p.id, v);
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  const Text('Volume (0.0 - 2.0)'),
-                  Slider(
-                    value: gain,
-                    min: 0.0,
-                    max: 2.0,
-                    divisions: 20,
-                    label: gain.toStringAsFixed(2),
-                    onChanged: (v) {
-                      setSt(() => gain = v);
-                      _intercomService.setGain(p.id, v);
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Fermer'),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
 
   Color _colorForKey(String key) {
     int hash = 0;
@@ -273,6 +204,17 @@ class _IntercomScreenState extends State<IntercomScreen> {
         title: const Text('Omega Intercom'),
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Theme.of(context).colorScheme.onPrimary,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Paramètres',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => SettingsScreen(intercom: _intercomService)),
+              );
+            },
+          )
+        ],
       ),
       body: Center(
         child: SingleChildScrollView(
@@ -313,7 +255,7 @@ class _IntercomScreenState extends State<IntercomScreen> {
                             shape: BoxShape.circle,
                             boxShadow: [
                               BoxShadow(
-                                color: Colors.black.withOpacity(0.2),
+                                color: Colors.black.withValues(alpha: 0.2),
                                 blurRadius: 12,
                                 spreadRadius: 2,
                                 offset: const Offset(0, 6),
@@ -439,11 +381,11 @@ class _IntercomScreenState extends State<IntercomScreen> {
                                 itemBuilder: (context, index) {
                                   final p = peers[index];
                                   final initial = (p.name.isNotEmpty ? p.name[0] : 'A').toUpperCase();
-                                  final color = _colorForKey('${p.id}-${p.address.address}-${p.port}');
+                                  final color = p.color != null ? Color(p.color!) : _colorForKey('${p.id}-${p.address.address}-${p.port}');
                                   return ListTile(
                                     dense: true,
                                     leading: CircleAvatar(
-                                      backgroundColor: color.withOpacity(0.85),
+                                      backgroundColor: color.withValues(alpha: 0.85),
                                       foregroundColor: Colors.white,
                                       child: Text(initial),
                                     ),
@@ -481,7 +423,7 @@ class _IntercomScreenState extends State<IntercomScreen> {
                         width: double.infinity,
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.surfaceVariant,
+                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: _logs.isEmpty
@@ -511,3 +453,6 @@ class _IntercomScreenState extends State<IntercomScreen> {
     );
   }
 }
+
+
+

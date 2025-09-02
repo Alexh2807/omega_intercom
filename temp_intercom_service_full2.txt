@@ -1,0 +1,459 @@
+// lib/intercom_service.dart
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+enum ConnectionMode { lan, internet }
+
+class PeerInfo {
+  final String id;
+  final String name;
+  final InternetAddress address;
+  final int port;
+  final bool isServer;
+  final int? color; // ARGB 0xAARRGGBB
+  const PeerInfo({
+    required this.id,
+    required this.name,
+    required this.address,
+    required this.port,
+    this.isServer = false,
+    this.color,
+  });
+}
+
+// --- Lecteur natif Android via MethodChannel ---
+class _NativePlayer {
+  static const MethodChannel _ch = MethodChannel('intercom_native_audio');
+
+  Future<void> start({int sampleRate = 16000}) async {
+    try { await _ch.invokeMethod('start', {'sr': sampleRate}); } catch (e) { debugPrint('Native start error: $e'); }
+  }
+
+  Future<void> write(Uint8List data) async {
+    try { await _ch.invokeMethod('write', data); } catch (e) { debugPrint('Native write error: $e'); }
+  }
+
+  Future<void> stop() async {
+    try { await _ch.invokeMethod('stop'); } catch (e) { debugPrint('Native stop error: $e'); }
+  }
+}
+
+class IntercomService {
+  // PCM16 mono @ 16 kHz : simple, fiable
+  static const int _sampleRate = 16000;
+
+  // Ports
+  static const int _lanAudioPort = 50005;     // audio PCM LAN
+  static const int _lanDiscoveryPort = 50004; // dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©couverte LAN
+  static const int _defaultInternetPort = 55667;
+
+  // RÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©seau / Audio
+  RawDatagramSocket? _audioSock;
+  RawDatagramSocket? _discoverySock;
+  final AudioRecorder _recorder = AudioRecorder();
+  StreamSubscription<Uint8List>? _micSub;
+
+  final _native = _NativePlayer();
+
+  bool _initialized = false;
+
+  // Mode
+  ConnectionMode _mode = ConnectionMode.lan;
+
+  // Internet
+  String? _serverHost;
+  int _serverPort = _defaultInternetPort;
+  InternetAddress? _serverAddress;
+
+  // IdentitÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© et prÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©fÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rences
+  String _selfId = '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}-${Random().nextInt(0xFFFF).toRadixString(16)}';
+  String _displayName = 'Appareil';
+  int _avatarColor = 0xFF3F51B5; // ARGB
+  double _masterGain = 1.0; // lecture
+  double _micGain = 1.0;    // emission
+  bool _isTalking = false;  // etat PTT
+  double _duckFactor = 0.15; // attenuation lecture pendant emission
+  int _gateLevel = 180;     // seuil moyen (|amplitude| moyen) pour gate micro
+  SharedPreferences? _prefs;
+  bool _prefsLoaded = false;
+
+  // Roster
+  final Map<String, PeerInfo> _netPeers = {}; // Internet: id -> PeerInfo
+  final Map<String, PeerInfo> _lanPeers = {}; // LAN: ip -> PeerInfo
+  final Map<String, DateTime> _lanLastSeen = {};
+  int _internetPeerCount = 0;
+
+  // PÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©riodiques
+  Timer? _helloTimer;
+  Timer? _presenceTimer;
+
+  // RÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©glages audio par participant
+  final Set<String> _muted = <String>{};
+  final Map<String, double> _gain = <String, double>{};
+
+  // Flux UI
+  final _logC = StreamController<String>.broadcast();
+  final _peersC = StreamController<List<PeerInfo>>.broadcast();
+  Stream<String> get logStream => _logC.stream;
+  Stream<List<PeerInfo>> get peersStream => _peersC.stream;
+  void _log(String m) { if (kDebugMode) print('[Intercom] $m'); _logC.add(m); }
+
+  // ========= Prefs / identitÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© =========
+  Future<void> _ensurePrefs() async {
+    if (_prefsLoaded) return;
+    _prefs = await SharedPreferences.getInstance();
+    final savedId = _prefs!.getString('user_id');
+    if (savedId != null && savedId.isNotEmpty) _selfId = savedId; else _prefs!.setString('user_id', _selfId);
+    final dn = _prefs!.getString('display_name');
+    if (dn != null && dn.isNotEmpty) _displayName = dn;
+    _avatarColor = _prefs!.getInt('avatar_color') ?? _avatarColor;
+    _masterGain = _prefs!.getDouble('master_gain') ?? _masterGain;
+    _micGain = _prefs!.getDouble('mic_gain') ?? _micGain;
+    _duckFactor = _prefs!.getDouble('duck_factor') ?? _duckFactor;
+    _gateLevel = _prefs!.getInt('gate_level') ?? _gateLevel;
+    _prefsLoaded = true;
+  }
+
+  String get displayName => _displayName;
+  int get avatarColor => _avatarColor;
+  double get masterGain => _masterGain;
+  double get micGain => _micGain;
+  String get selfId => _selfId;
+  double get duckFactor => _duckFactor;
+  int get gateLevel => _gateLevel;
+
+  Future<void> setDisplayName(String name) async {
+    await _ensurePrefs();
+    _displayName = name.trim().isEmpty ? 'Utilisateur' : name.trim();
+    await _prefs!.setString('display_name', _displayName);
+    _sendHello();
+    _sendPresence();
+  }
+
+  Future<void> setAvatarColor(int argb) async { await _ensurePrefs(); _avatarColor = argb; await _prefs!.setInt('avatar_color', _avatarColor); _sendHello(); _sendPresence(); }
+  Future<void> setMasterGain(double g) async { await _ensurePrefs(); _masterGain = g.clamp(0.0, 2.0); await _prefs!.setDouble('master_gain', _masterGain); }
+  Future<void> setMicGain(double g) async { await _ensurePrefs(); _micGain = g.clamp(0.0, 2.0); await _prefs!.setDouble('mic_gain', _micGain); }
+
+  Future<void> setDuckFactor(double f) async {
+    await _ensurePrefs();
+    _duckFactor = f.clamp(0.0, 1.0);
+    await _prefs!.setDouble('duck_factor', _duckFactor);
+  }
+
+  Future<void> setGateLevel(int level) async {
+    await _ensurePrefs();
+    _gateLevel = level.clamp(0, 2000);
+    await _prefs!.setInt('gate_level', _gateLevel);
+  }
+
+  Future<void> resetSettings() async {
+    await _ensurePrefs();
+    try {
+      final keys = _prefs!.getKeys();
+      for (final k in keys) {
+        if (k == 'display_name' || k == 'avatar_color' || k == 'master_gain' || k == 'mic_gain' || k == 'duck_factor' || k == 'gate_level') {
+          await _prefs!.remove(k);
+        }
+        if (k.startsWith('peer_gain_') || k.startsWith('peer_mute_')) {
+          await _prefs!.remove(k);
+        }
+      }
+    } catch (_) {}
+    _displayName = 'Appareil';
+    _avatarColor = 0xFF3F51B5;
+    _masterGain = 1.0;
+    _micGain = 1.0;
+    _muted.clear();
+    _gain.clear();
+    _duckFactor = 0.15;
+    _gateLevel = 180;
+    _emitPeers();
+    _sendHello();
+    _sendPresence();
+  }
+
+  void setMuted(String peerId, bool m) { if (m) { _muted.add(peerId); } else { _muted.remove(peerId); } try { _prefs?.setBool('peer_mute_$peerId', _muted.contains(peerId)); } catch (_) {} }
+  void setGain(String peerId, double g) { _gain[peerId] = g.clamp(0.0, 2.0); try { _prefs?.setDouble('peer_gain_$peerId', _gain[peerId]!); } catch (_) {} }
+  bool isMuted(String peerId) => _muted.contains(peerId);
+  double gainOf(String peerId) => _gain[peerId] ?? 1.0;
+
+  // ========= API UI =========
+  Future<bool> requestPermissions() async {
+    final mic = await Permission.microphone.request();
+    final ok = mic.isGranted; if (!ok) _log('Permission micro refusÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©e'); return ok;
+  }
+
+  void setMode(ConnectionMode mode) { _mode = mode; _log('Mode sÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©lectionnÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©: ${_mode.name}'); _emitPeers(); }
+
+  void setInternetEndpoint({required String host, int? port}) { _serverHost = host.trim(); if (port != null) _serverPort = port; _serverAddress = null; _log('Endpoint Internet: $_serverHost:$_serverPort'); _emitPeers(); }
+
+  void setPeer(String ip) {
+    final addr = InternetAddress(ip.trim());
+    _lanPeers[addr.address] = PeerInfo(id: 'manual', name: 'Appareil', address: addr, port: _lanAudioPort, isServer: false);
+    _lanLastSeen[addr.address] = DateTime.now();
+    _emitPeers();
+  }
+
+  Future<void> start() async {
+    await _ensurePrefs();
+    if (_initialized) { _log('DÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©jÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  initialisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©'); return; }
+
+    // Socket audio (rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ception)
+    _audioSock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, _lanAudioPort, reuseAddress: true, reusePort: true);
+    _audioSock!.readEventsEnabled = true; _audioSock!.listen(_onAudioUdp);
+    _log('Audio UDP: ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©coute sur 0.0.0.0:$_lanAudioPort');
+
+    // DÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©marre le lecteur natif (AudioTrack)
+    await _native.start(sampleRate: _sampleRate);
+
+    // DÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©couverte LAN
+    _discoverySock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, _lanDiscoveryPort, reuseAddress: true, reusePort: true);
+    _discoverySock!.broadcastEnabled = true; _discoverySock!.readEventsEnabled = true; _discoverySock!.listen(_onDiscoveryUdp);
+    _log('DÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©couverte UDP: ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©coute sur 0.0.0.0:$_lanDiscoveryPort');
+
+    // Pings + purge
+    _helloTimer?.cancel();
+    _helloTimer = Timer.periodic(const Duration(seconds: 2), (_) { _sendHello(); _purgeOldPeers(); });
+    _sendHello();
+
+    // PrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©sence Internet si nÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©cessaire
+    if (_mode == ConnectionMode.internet) {
+      _presenceTimer?.cancel();
+      _presenceTimer = Timer.periodic(const Duration(seconds: 3), (_) => _sendPresence());
+      _sendPresence();
+    }
+
+    _initialized = true;
+  }
+
+  Future<void> startTalking() async {
+    if (!await requestPermissions()) { throw Exception('Permission micro refusÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©e'); }
+    if (!_initialized) await start();
+
+    if (_mode == ConnectionMode.internet) {
+      await _resolveServerIfNeeded();
+      if (_serverAddress == null) { _log('Impossible de rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©soudre $_serverHost'); throw Exception('Serveur non rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©solu'); }
+    }
+
+    final stream = await _recorder.startStream(RecordConfig(encoder: AudioEncoder.pcm16bits, sampleRate: _sampleRate, numChannels: 1));
+    _micSub?.cancel();
+    _micSub = stream.listen((Uint8List chunk) {
+      try {
+        if (chunk.isEmpty) return;
+        if (!_passesNoiseGate(chunk)) return;
+        // PrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©pare paquet avec en-tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂOui ªte mix-minus: 'IC' + version(1) + idLen(1) + selfId + PCM
+        final idBytes = utf8.encode(_selfId);
+        final headerLen = 4 + idBytes.length;
+        // Applique le gain micro si configurÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
+        Uint8List micPcm = chunk;
+        if (_micGain != 1.0) { micPcm = _applyGainPcm16(Uint8List.fromList(chunk), _micGain); }
+        final data = Uint8List(headerLen + micPcm.length);
+        final b = data.buffer.asUint8List();
+        // Magic 'I','C'
+        b[0] = 0x49; b[1] = 0x43; b[2] = 0x01; // version 1
+        b[3] = idBytes.length & 0xFF;
+        // id
+        b.setRange(4, 4 + idBytes.length, idBytes);
+        // payload PCM16
+        b.setRange(4 + idBytes.length, data.length, micPcm);
+
+        if (_mode == ConnectionMode.lan) {
+          for (final p in _lanPeers.values) { _audioSock?.send(data, p.address, p.port); }
+        } else {
+          final dst = _serverAddress; if (dst != null) _audioSock?.send(data, dst, _serverPort);
+        }
+      } catch (e) { _log('Erreur envoi UDP: $e'); }
+    });
+    _isTalking = true;
+    _log('Capture micro arrêtée');
+    _isTalking = false;
+  }
+
+  Future<void> stopTalking() async {
+    await _micSub?.cancel(); _micSub = null; if (await _recorder.isRecording()) { await _recorder.stop(); }
+    _isTalking = true;
+    _log('Capture micro arrêtée');
+    _isTalking = false;
+  }
+
+  Future<void> stop() async {
+    await stopTalking();
+    _helloTimer?.cancel(); _helloTimer = null;
+    _discoverySock?.close(); _discoverySock = null;
+    await _native.stop();
+    _audioSock?.close(); _audioSock = null;
+    _presenceTimer?.cancel(); _presenceTimer = null;
+    _initialized = false; _lanPeers.clear(); _lanLastSeen.clear(); _netPeers.clear(); _emitPeers();
+    _log('Intercom arrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚ÂªtÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©');
+  }
+
+  void dispose() { _logC.close(); _peersC.close(); }
+
+  // ========= PrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©sence Internet et utilitaires =========
+  void _sendPresence() {
+    if (_mode != ConnectionMode.internet) return;
+    final dst = _serverAddress; if (dst == null) return;
+    final msg = 'ICSV1|PRES|$_selfId|$_displayName|$_avatarColor';
+    _audioSock?.send(utf8.encode(msg), dst, _serverPort);
+  }
+
+  Uint8List _applyGainPcm16(Uint8List pcm, double gain) {
+    try {
+      final bd = ByteData.view(pcm.buffer, pcm.offsetInBytes, pcm.lengthInBytes);
+      for (int i = 0; i < pcm.lengthInBytes; i += 2) {
+        int s = bd.getInt16(i, Endian.little);
+        double v = s * gain; if (v > 32767) v = 32767; if (v < -32768) v = -32768;
+        bd.setInt16(i, v.toInt(), Endian.little);
+      }
+      return pcm;
+    } catch (_) { return pcm; }
+  }
+
+  // ========= UDP : rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ception audio =========
+  DateTime _lastRxLog = DateTime.fromMillisecondsSinceEpoch(0);
+  void _onAudioUdp(RawSocketEvent ev) {
+    if (ev != RawSocketEvent.read) return;
+    final dg = _audioSock?.receive(); if (dg == null) return;
+    final bytes = dg.data;
+
+    // ContrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â´les (PEERS / PRES / GONE)
+    try {
+      if (bytes.length >= 6 && bytes[0] == 0x49 && bytes[1] == 0x43) {
+        final txt = utf8.decode(bytes, allowMalformed: true);
+        if (txt.startsWith('ICSV1|PEERS|')) {
+          final parts = txt.split('|');
+          final n = int.tryParse(parts[2]) ?? 0; if (n != _internetPeerCount) { _internetPeerCount = n; _emitPeers(); }
+          return;
+        }
+        if (txt.startsWith('ICSV1|PRES|')) {
+          final parts = txt.split('|');
+          if (parts.length >= 4) {
+            final id = parts[2]; final name = parts[3];
+            int? color; if (parts.length >= 5) { try { color = int.parse(parts[4]); } catch (_) { color = null; } }
+            if (id != _selfId) {
+              _netPeers[id] = PeerInfo(id: id, name: name.isEmpty ? 'Utilisateur' : name, address: _serverAddress ?? InternetAddress.anyIPv4, port: _serverPort, isServer: false, color: color);
+              try { final mg = _prefs?.getDouble('peer_gain_$id'); if (mg != null) _gain[id] = mg; final mm = _prefs?.getBool('peer_mute_$id'); if (mm == true) _muted.add(id); else if (mm == false) _muted.remove(id); } catch (_) {}
+              _emitPeers();
+            }
+          }
+          return;
+        }
+        if (txt.startsWith('ICSV1|GONE|')) { final parts = txt.split('|'); if (parts.length >= 3) { _netPeers.remove(parts[2]); _emitPeers(); } return; }
+      }
+    } catch (_) {}
+
+    // Paquet audio IC|01|idLen|id|pcm16
+    Uint8List payload;
+    try {
+      if (bytes.length >= 4 && bytes[0] == 0x49 && bytes[1] == 0x43 && bytes[2] == 0x01) {
+        final idLen = bytes[3] & 0xFF;
+        if (bytes.length >= 4 + idLen) {
+          final senderId = utf8.decode(bytes.sublist(4, 4 + idLen));
+          if (senderId == _selfId) return; // mix-minus
+          payload = bytes.sublist(4 + idLen);
+        } else { payload = bytes; }
+      } else { payload = bytes; }
+    } catch (_) { payload = bytes; }
+
+    if (payload.isNotEmpty) {
+      Uint8List toPlay = payload;
+      try {
+        if (bytes.length >= 4 && bytes[0] == 0x49 && bytes[1] == 0x43 && bytes[2] == 0x01) {
+          final idLen = bytes[3] & 0xFF; if (bytes.length >= 4 + idLen) {
+            final sid = utf8.decode(bytes.sublist(4, 4 + idLen), allowMalformed: true);
+            if (_muted.contains(sid)) return;
+            final g = _gain[sid] ?? 1.0; if (g != 1.0) toPlay = _applyGainPcm16(Uint8List.fromList(toPlay), g);
+          }
+        }
+      } catch (_) {}
+      if (_masterGain != 1.0) { toPlay = _applyGainPcm16(Uint8List.fromList(toPlay), _masterGain); }
+            final double globalGain = _masterGain * (_isTalking ? _duckFactor : 1.0);
+      if (globalGain != 1.0) { toPlay = _applyGainPcm16(Uint8List.fromList(toPlay), globalGain); }
+      _native.write(toPlay);
+    }
+
+    final now = DateTime.now(); if (now.difference(_lastRxLog).inMilliseconds > 500) { _lastRxLog = now; _log('RX ${dg.data.length} bytes de ${dg.address.address}:${dg.port}'); }
+
+    if (_mode == ConnectionMode.lan) {
+      final ip = dg.address.address;
+      if (!_lanPeers.containsKey(ip)) { _lanPeers[ip] = PeerInfo(id: 'unknown', name: 'Appareil', address: dg.address, port: dg.port, isServer: false); _emitPeers(); }
+      _lanLastSeen[ip] = DateTime.now();
+    }
+  }
+
+  // ========= UDP : dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©couverte LAN =========
+  void _onDiscoveryUdp(RawSocketEvent ev) {
+    if (ev != RawSocketEvent.read) return;
+    final dg = _discoverySock?.receive(); if (dg == null) return;
+    try {
+      final txt = utf8.decode(dg.data);
+      final parts = txt.split('|');
+      if (parts.length < 4) return;
+      final cmd = parts[0];
+      final peerId = parts[1]; if (peerId == _selfId) return;
+      final peerPort = int.tryParse(parts[2]) ?? _lanAudioPort;
+      final ip = dg.address.address;
+      // nom et couleur
+      String peerName = parts.length >= 4 ? parts[3] : 'Appareil';
+      int? color; if (parts.length >= 5) { try { color = int.parse(parts[4]); } catch (_) { color = null; } }
+      _lanPeers[ip] = PeerInfo(id: peerId, name: (peerName.isEmpty ? 'Appareil' : peerName), address: dg.address, port: peerPort, isServer: false, color: color);
+      _lanLastSeen[ip] = DateTime.now(); _emitPeers();
+      if (cmd == 'HELLO') {
+        final reply = 'HERE|$_selfId|$_lanAudioPort|$_displayName|$_avatarColor';
+        _discoverySock?.send(utf8.encode(reply), dg.address, _lanDiscoveryPort);
+      }
+    } catch (_) {}
+  }
+
+  void _sendHello() {
+    if (_discoverySock == null) return;
+    final msg = 'HELLO|$_selfId|$_lanAudioPort|$_displayName|$_avatarColor';
+    final bytes = utf8.encode(msg);
+    final bcast = InternetAddress('255.255.255.255');
+    _discoverySock!.send(bytes, bcast, _lanDiscoveryPort);
+    for (final p in _lanPeers.values) {
+      _discoverySock!.send(utf8.encode('HERE|$_selfId|$_lanAudioPort|$_displayName|$_avatarColor'), p.address, _lanDiscoveryPort);
+    }
+  }
+
+  void _purgeOldPeers() {
+    final now = DateTime.now();
+    final toRemove = <String>[];
+    _lanLastSeen.forEach((ip, ts) { if (now.difference(ts) > const Duration(seconds: 6)) { toRemove.add(ip); } });
+    for (final ip in toRemove) { _lanLastSeen.remove(ip); _lanPeers.remove(ip); }
+    if (toRemove.isNotEmpty) _emitPeers();
+  }
+
+  // ========= Internet (DNS) =========
+  Future<void> _resolveServerIfNeeded() async {
+    if (_serverAddress != null || _serverHost == null || _serverHost!.isEmpty) { _emitPeers(); return; }
+    final parsed = InternetAddress.tryParse(_serverHost!);
+    if (parsed != null) { _serverAddress = parsed; _emitPeers(); return; }
+    try {
+      final list = await InternetAddress.lookup(_serverHost!);
+      _serverAddress = list.firstWhere((a) => a.type == InternetAddressType.IPv4, orElse: () => list.first);
+      _emitPeers();
+    } catch (_) { _emitPeers(); }
+  }
+
+  void _emitPeers() {
+    if (_mode == ConnectionMode.internet) {
+      _peersC.add(_netPeers.values.toList(growable: false));
+    } else {
+      _peersC.add(_lanPeers.values.toList(growable: false));
+    }
+  }
+}
+
+
+
+

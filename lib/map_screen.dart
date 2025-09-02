@@ -4,13 +4,13 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:flutter_google_places_sdk/flutter_google_places_sdk.dart' as placesSdk;
+import 'package:flutter_google_places_sdk/flutter_google_places_sdk.dart' as places_sdk;
 import 'package:omega_intercom/route_options_panel.dart';
 import 'package:omega_intercom/trip_info_panel.dart';
 // Nouvel import pour la page intercom
 import 'package:omega_intercom/intercom_screen.dart';
 
-const String GOOGLE_MAPS_API_KEY = "VOTRE_CLE_API_GOOGLE_MAPS";
+const String googleMapsApiKey = "AIzaSyA-506MjOYcDfPPNgMwWXO2UeVAiVnV6j0";
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -38,8 +38,8 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   String? _tripDistance;
   bool _isRouteVisible = false;
 
-  final places = placesSdk.FlutterGooglePlacesSdk(GOOGLE_MAPS_API_KEY);
-  List<placesSdk.AutocompletePrediction> _predictions = [];
+  final places = places_sdk.FlutterGooglePlacesSdk(googleMapsApiKey);
+  List<places_sdk.AutocompletePrediction> _predictions = [];
   String _selectedPlaceDescription = '';
   Timer? _debounce;
 
@@ -55,10 +55,7 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   @override
   void didChangePlatformBrightness() {
     setState(() {
-      _loadMapStyle().then((_) async {
-        final GoogleMapController controller = await _controller.future;
-        controller.setMapStyle(_mapStyle);
-      });
+      _loadMapStyle();
     });
   }
 
@@ -121,7 +118,7 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _getDirections(LatLng destinationCoords, String destinationDescription) async {
     if (_currentPosition == null) return;
 
-    String url = 'https://maps.googleapis.com/maps/api/directions/json?origin=${_currentPosition!.latitude},${_currentPosition!.longitude}&destination=${destinationCoords.latitude},${destinationCoords.longitude}&key=$GOOGLE_MAPS_API_KEY';
+    String url = 'https://maps.googleapis.com/maps/api/directions/json?origin=${_currentPosition!.latitude},${_currentPosition!.longitude}&destination=${destinationCoords.latitude},${destinationCoords.longitude}&key=$googleMapsApiKey';
 
     String restrictions = '';
     if (_routeOptions.avoidHighways) restrictions += 'highways|';
@@ -240,13 +237,13 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> _onPredictionTapped(placesSdk.AutocompletePrediction prediction) async {
+  Future<void> _onPredictionTapped(places_sdk.AutocompletePrediction prediction) async {
     setState(() {
       _predictions = [];
       _searchFocusNode.unfocus();
     });
 
-    final placeDetails = await places.fetchPlace(prediction.placeId, fields: [placesSdk.PlaceField.Location]);
+    final placeDetails = await places.fetchPlace(prediction.placeId, fields: [places_sdk.PlaceField.Location]);
     final location = placeDetails.place?.latLng;
 
     if (location != null) {
@@ -272,6 +269,7 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         children: [
           GoogleMap(
             mapType: MapType.normal,
+            style: _mapStyle,
             initialCameraPosition: _kDefaultPosition,
             markers: _markers,
             polylines: _polylines,
@@ -280,7 +278,6 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             zoomControlsEnabled: false,
             onMapCreated: (GoogleMapController controller) {
               _controller.complete(controller);
-              controller.setMapStyle(_mapStyle);
             },
           ),
           Positioned(
