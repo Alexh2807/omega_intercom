@@ -1,11 +1,15 @@
 import 'dart:async';
-import 'package.flutter/material.dart';
-import 'package.google_maps_flutter/google_maps_flutter.dart';
-import 'package.geolocator/geolocator.dart';
-import 'package.http/http.dart' as http;
+import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:flutter_google_places_sdk/flutter_google_places_sdk.dart' as placesSdk;
+import 'package:omega_intercom/route_options_panel.dart';
+import 'package:omega_intercom/trip_info_panel.dart';
+// Nouvel import pour la page intercom
+import 'package:omega_intercom/intercom_screen.dart';
 
-// N'OUBLIEZ PAS DE METTRE VOTRE CLÉ API GOOGLE MAPS ICI !
 const String GOOGLE_MAPS_API_KEY = "VOTRE_CLE_API_GOOGLE_MAPS";
 
 class MapScreen extends StatefulWidget {
@@ -16,52 +20,38 @@ class MapScreen extends StatefulWidget {
 }
 
 class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
-  // Contrôleur pour interagir avec la GoogleMap
   final Completer<GoogleMapController> _controller = Completer();
-  // Contrôleur pour le champ de recherche de destination
-  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
 
-  // Position initiale de la caméra (par défaut sur Paris)
   static const CameraPosition _kDefaultPosition = CameraPosition(
     target: LatLng(48.8566, 2.3522),
     zoom: 12,
   );
 
-  // Ensemble des marqueurs sur la carte (position actuelle, destination)
   final Set<Marker> _markers = {};
-  // Ensemble des polylignes (le tracé de l'itinéraire)
   final Set<Polyline> _polylines = {};
-  // Position GPS actuelle de l'utilisateur
   LatLng? _currentPosition;
-  // Style de la carte (sombre ou clair)
   String? _mapStyle;
 
+  RouteOptions _routeOptions = RouteOptions();
+  String? _tripDuration;
+  String? _tripDistance;
+  bool _isRouteVisible = false;
+
+  final places = placesSdk.FlutterGooglePlacesSdk(GOOGLE_MAPS_API_KEY);
+  List<placesSdk.AutocompletePrediction> _predictions = [];
+  String _selectedPlaceDescription = '';
+  Timer? _debounce;
+
+  // ... (Toutes les fonctions comme initState, _determinePosition, _getDirections etc. ne changent pas)
   @override
   void initState() {
     super.initState();
-    // Permet de détecter les changements de thème (clair/sombre) du système
     WidgetsBinding.instance.addObserver(this);
-    // Charge le style de carte initial
     _loadMapStyle();
-    // Démarre le processus de géolocalisation
     _determinePosition();
   }
 
-  // Charge le bon style de carte (clair ou sombre) en fonction du thème de l'app
-  Future<void> _loadMapStyle() async {
-    final Brightness brightness = Theme.of(context).brightness;
-    final String stylePath = brightness == Brightness.dark
-        ? 'assets/map_styles/dark_mode.json'
-        : 'assets/map_styles/light_mode.json';
-    try {
-      _mapStyle = await DefaultAssetBundle.of(context).loadString(stylePath);
-    } catch (e) {
-      // En cas d'erreur de chargement du style, on n'applique pas de style personnalisé
-      _mapStyle = null;
-    }
-  }
-
-  // Met à jour le style de la carte quand l'utilisateur change le thème de son téléphone
   @override
   void didChangePlatformBrightness() {
     setState(() {
@@ -72,19 +62,26 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
   }
 
-  // --- LOGIQUE DE GÉOLOCALISATION ---
+  Future<void> _loadMapStyle() async {
+    final Brightness brightness = MediaQuery.of(context).platformBrightness;
+    final String stylePath = brightness == Brightness.dark
+        ? 'assets/map_styles/dark_mode.json'
+        : 'assets/map_styles/light_mode.json';
+    try {
+      _mapStyle = await DefaultAssetBundle.of(context).loadString(stylePath);
+    } catch (e) {
+      _mapStyle = null;
+    }
+  }
+
   Future<void> _determinePosition() async {
     bool serviceEnabled;
     LocationPermission permission;
-
-    // Vérifie si le service de localisation est activé sur le téléphone
     serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       _showErrorDialog('Le service de localisation est désactivé.');
       return;
     }
-
-    // Vérifie les permissions de l'application
     permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
@@ -93,20 +90,13 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         return;
       }
     }
-
     if (permission == LocationPermission.deniedForever) {
-      _showErrorDialog(
-          'La permission de localisation est refusée de manière permanente. Veuillez l\'activer dans les paramètres.');
+      _showErrorDialog('Permission de localisation refusée de manière permanente.');
       return;
     }
-
-    // Récupère la position actuelle
     Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
-
     setState(() {
-      // Met à jour la position actuelle
       _currentPosition = LatLng(position.latitude, position.longitude);
-      // Efface les anciens marqueurs et ajoute le nouveau à la position actuelle
       _markers.clear();
       _markers.add(
         Marker(
@@ -117,79 +107,70 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ),
       );
     });
-
-    // Centre la caméra sur la nouvelle position
     _goToCurrentPosition();
   }
 
-  // Anime la caméra pour la déplacer vers la position actuelle de l'utilisateur
   Future<void> _goToCurrentPosition() async {
     if (_currentPosition == null) return;
     final GoogleMapController controller = await _controller.future;
     controller.animateCamera(CameraUpdate.newCameraPosition(
-      CameraPosition(
-        target: _currentPosition!,
-        zoom: 16.5,
-        tilt: 30.0, // Donne un peu de perspective
-      ),
+      CameraPosition(target: _currentPosition!, zoom: 16.5, tilt: 30.0),
     ));
   }
 
-  // --- LOGIQUE DE CALCUL D'ITINÉRAIRE ---
-  Future<void> _getDirections(String destination) async {
-    if (_currentPosition == null || destination.isEmpty) return;
+  Future<void> _getDirections(LatLng destinationCoords, String destinationDescription) async {
+    if (_currentPosition == null) return;
 
-    // Construit l'URL pour appeler l'API Google Directions
-    final String url =
-        'https://maps.googleapis.com/maps/api/directions/json?origin=${_currentPosition!.latitude},${_currentPosition!.longitude}&destination=$destination&key=$GOOGLE_MAPS_API_KEY';
+    String url = 'https://maps.googleapis.com/maps/api/directions/json?origin=${_currentPosition!.latitude},${_currentPosition!.longitude}&destination=${destinationCoords.latitude},${destinationCoords.longitude}&key=$GOOGLE_MAPS_API_KEY';
+
+    String restrictions = '';
+    if (_routeOptions.avoidHighways) restrictions += 'highways|';
+    if (_routeOptions.avoidTolls) restrictions += 'tolls|';
+    if (_routeOptions.avoidFerries) restrictions += 'ferries|';
+    if (restrictions.isNotEmpty) {
+      url += '&avoid=${restrictions.substring(0, restrictions.length - 1)}';
+    }
 
     final response = await http.get(Uri.parse(url));
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
       if (data['routes'].isNotEmpty) {
-        // Récupère les points encodés de l'itinéraire
-        final points = data['routes'][0]['overview_polyline']['points'];
-        // Décode ces points en une liste de coordonnées géographiques
+        final route = data['routes'][0];
+        final leg = route['legs'][0];
+        final points = route['overview_polyline']['points'];
         final List<LatLng> polylineCoordinates = _decodePolyline(points);
 
-        final LatLng destinationLatLng = LatLng(
-            data['routes'][0]['legs'][0]['end_location']['lat'],
-            data['routes'][0]['legs'][0]['end_location']['lng']
-        );
-
         setState(() {
-          // Efface l'ancien itinéraire
           _polylines.clear();
-          // Ajoute le nouvel itinéraire sur la carte
           _polylines.add(
             Polyline(
               polylineId: const PolylineId('route'),
               points: polylineCoordinates,
               color: Colors.blueAccent,
               width: 6,
-              startCap: Cap.roundCap,
-              endCap: Cap.roundCap,
             ),
           );
-          // Ajoute un marqueur pour la destination
           _markers.add(
             Marker(
               markerId: const MarkerId('destination'),
-              position: destinationLatLng,
-              infoWindow: InfoWindow(title: destination),
+              position: destinationCoords,
+              infoWindow: InfoWindow(title: destinationDescription),
             ),
           );
+          _tripDistance = leg['distance']['text'];
+          _tripDuration = leg['duration']['text'];
+          _isRouteVisible = true;
+          _selectedPlaceDescription = destinationDescription;
         });
       } else {
-        _showErrorDialog('Aucun itinéraire trouvé.');
+        _showErrorDialog('Aucun itinéraire trouvé avec ces options.');
       }
     } else {
       _showErrorDialog('Erreur lors du calcul de l\'itinéraire.');
     }
   }
 
-  // Algorithme de Google pour décoder la chaîne de points de l'itinéraire
   List<LatLng> _decodePolyline(String encoded) {
     List<LatLng> points = [];
     int index = 0, len = encoded.length;
@@ -217,96 +198,178 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return points;
   }
 
-  // Affiche une boite de dialogue pour les erreurs
   void _showErrorDialog(String message) {
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Erreur'),
         content: Text(message),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
         ],
       ),
     );
   }
 
+  void _cancelRoute() {
+    setState(() {
+      _polylines.clear();
+      _markers.removeWhere((m) => m.markerId.value == 'destination');
+      _isRouteVisible = false;
+      _tripDistance = null;
+      _tripDuration = null;
+      _selectedPlaceDescription = '';
+      _predictions = [];
+    });
+  }
+
+  void _onSearchChanged(String value) {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(milliseconds: 500), () async {
+      if (value.isNotEmpty) {
+        final result = await places.findAutocompletePredictions(value, countries: ['fr']);
+        setState(() {
+          _predictions = result.predictions;
+        });
+      } else {
+        setState(() {
+          _predictions = [];
+        });
+      }
+    });
+  }
+
+  Future<void> _onPredictionTapped(placesSdk.AutocompletePrediction prediction) async {
+    setState(() {
+      _predictions = [];
+      _searchFocusNode.unfocus();
+    });
+
+    final placeDetails = await places.fetchPlace(prediction.placeId, fields: [placesSdk.PlaceField.Location]);
+    final location = placeDetails.place?.latLng;
+
+    if (location != null) {
+      final mapLatLng = LatLng(location.lat, location.lng);
+      _getDirections(mapLatLng, prediction.fullText);
+    }
+  }
+
   @override
   void dispose() {
-    // Nettoie l'observer pour éviter les fuites de mémoire
     WidgetsBinding.instance.removeObserver(this);
-    _searchController.dispose();
+    _searchFocusNode.dispose();
+    _debounce?.cancel();
     super.dispose();
   }
 
-  // --- CONSTRUCTION DE L'INTERFACE UTILISATEUR ---
+
+  // --- LA SEULE PARTIE MODIFIÉE EST LA FONCTION BUILD ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
         children: [
-          // La carte Google en arrière-plan
           GoogleMap(
             mapType: MapType.normal,
             initialCameraPosition: _kDefaultPosition,
             markers: _markers,
             polylines: _polylines,
-            myLocationEnabled: true, // Affiche le point bleu de localisation natif
-            myLocationButtonEnabled: false, // On crée notre propre bouton
-            zoomControlsEnabled: false, // On désactive les boutons de zoom par défaut
+            myLocationEnabled: true,
+            myLocationButtonEnabled: false,
+            zoomControlsEnabled: false,
             onMapCreated: (GoogleMapController controller) {
               _controller.complete(controller);
-              // Applique le style de carte une fois qu'elle est prête
               controller.setMapStyle(_mapStyle);
             },
           ),
-          // La barre de recherche
           Positioned(
-            top: MediaQuery.of(context).padding.top + 15, // S'adapte à l'encoche du téléphone
+            top: MediaQuery.of(context).padding.top + 15,
             left: 15,
             right: 15,
-            child: Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).cardColor,
-                borderRadius: BorderRadius.circular(30),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Colors.black26,
-                    blurRadius: 10,
-                    offset: Offset(0, 4),
+            child: Column(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).cardColor,
+                    borderRadius: BorderRadius.circular(30),
+                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4))],
                   ),
-                ],
-              ),
-              child: TextField(
-                controller: _searchController,
-                decoration: InputDecoration(
-                  hintText: 'Où allez-vous ?',
-                  border: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 20),
-                  prefixIcon: const Icon(Icons.search),
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.clear),
-                    onPressed: () => _searchController.clear(),
+                  child: TextField(
+                    focusNode: _searchFocusNode,
+                    onChanged: _onSearchChanged,
+                    decoration: InputDecoration(
+                      hintText: 'Où allez-vous ?',
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: _isRouteVisible
+                          ? IconButton(icon: const Icon(Icons.close), onPressed: _cancelRoute)
+                          : null,
+                    ),
+                    controller: TextEditingController(text: _selectedPlaceDescription)..selection = TextSelection.fromPosition(TextPosition(offset: _selectedPlaceDescription.length)),
                   ),
                 ),
-                onSubmitted: (value) {
-                  _getDirections(value);
-                  FocusScope.of(context).unfocus(); // Ferme le clavier
-                },
-              ),
+                if (_predictions.isNotEmpty)
+                  Material(
+                    elevation: 8,
+                    borderRadius: BorderRadius.circular(15),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _predictions.length,
+                      itemBuilder: (context, index) {
+                        final prediction = _predictions[index];
+                        return ListTile(
+                          title: Text(prediction.primaryText),
+                          subtitle: Text(prediction.secondaryText),
+                          onTap: () => _onPredictionTapped(prediction),
+                        );
+                      },
+                    ),
+                  ),
+              ],
             ),
           ),
+
+          if (!_isRouteVisible)
+            RouteOptionsPanel(
+              onOptionsChanged: (options) {
+                _routeOptions = options;
+              },
+            ),
+
+          if (_isRouteVisible && _tripDistance != null && _tripDuration != null)
+            TripInfoPanel(
+              duration: _tripDuration!,
+              distance: _tripDistance!,
+              onCancel: _cancelRoute,
+            ),
         ],
       ),
-      // Bouton flottant pour recentrer sur la position de l'utilisateur
-      floatingActionButton: FloatingActionButton(
-        onPressed: _goToCurrentPosition,
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Theme.of(context).colorScheme.onPrimary,
-        child: const Icon(Icons.my_location),
+      // --- MODIFICATION DES BOUTONS FLOTTANTS ---
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          FloatingActionButton(
+            heroTag: 'recenter_btn',
+            onPressed: _goToCurrentPosition,
+            child: const Icon(Icons.my_location),
+          ),
+          const SizedBox(height: 10),
+          // BOUTON MODIFIÉ POUR OUVRIR LA PAGE INTERCOM
+          FloatingActionButton(
+            heroTag: 'intercom_btn',
+            onPressed: () {
+              // Action de navigation vers la nouvelle page
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const IntercomScreen()),
+              );
+            },
+            backgroundColor: Theme.of(context).colorScheme.secondary,
+            child: const Icon(Icons.podcasts),
+          ),
+        ],
       ),
     );
   }

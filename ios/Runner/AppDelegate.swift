@@ -1,14 +1,15 @@
-import Flutter
 import UIKit
-import GoogleMaps
+import Flutter
+import GoogleMaps // Important d'importer GoogleMaps
 
-@main
+@UIApplicationMain
 @objc class AppDelegate: FlutterAppDelegate {
   override func application(
   _ application: UIApplication,
   didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    // Initialise la clé d'API Google Maps pour iOS
+
+    // INSEREZ VOTRE CLÉ API GOOGLE MAPS ICI
     GMSServices.provideAPIKey("AIzaSyA-506MjOYcDfPPNgMwWXO2UeVAiVnV6j0")
 
     GeneratedPluginRegistrant.register(with: self)
