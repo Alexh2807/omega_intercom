@@ -173,11 +173,13 @@ class _IntercomScreenState extends State<IntercomScreen> {
     }
 
     await _intercomService.start();
-    // Full duplex: start capturing immediately
-    try {
-      await _intercomService.startTalking();
-      _isTalking = true;
-    } catch (_) {}
+    // Full duplex auto if enabled
+    if (_intercomService.autoFullDuplex) {
+      try {
+        await _intercomService.startTalking();
+        _isTalking = true;
+      } catch (_) {}
+    }
 
     _logSub?.cancel();
     _logSub = _intercomService.logStream.listen((line) {

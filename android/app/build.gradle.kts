@@ -1,9 +1,20 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// Load local.properties for non-checked-in secrets
+val localProps = Properties()
+run {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { localProps.load(it) }
+}
+val mapsApiKey: String = (project.findProperty("MAPS_API_KEY") as String?)
+    ?: (System.getenv("MAPS_API_KEY") ?: localProps.getProperty("MAPS_API_KEY") ?: "")
 
 android {
     namespace = "com.gravityyfh.omega_intercom"
@@ -29,6 +40,8 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // Provide Google Maps API Key via Gradle property, env var, or local.properties
+        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
     }
 
     buildTypes {

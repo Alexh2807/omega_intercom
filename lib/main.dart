@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:omega_intercom/map_screen.dart';
+import 'package:omega_intercom/app_config.dart';
+import 'package:omega_intercom/widgets/debug_overlay.dart';
 // Il n'est plus nécessaire d'importer le plugin Places ici
 
-void main() {
-  // Pas besoin d'initialisation ici, on lance directement l'app
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AppConfig.init();
   runApp(const MyApp());
 }
 
@@ -30,6 +33,14 @@ class MyApp extends StatelessWidget {
         ),
       ),
       themeMode: ThemeMode.system,
+      builder: (context, child) {
+        return Stack(
+          children: [
+            if (child != null) child,
+            const DebugOverlay(),
+          ],
+        );
+      },
       home: const MapScreen(),
     );
   }

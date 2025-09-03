@@ -9,8 +9,7 @@ import 'package:omega_intercom/route_options_panel.dart';
 import 'package:omega_intercom/trip_info_panel.dart';
 // Nouvel import pour la page intercom
 import 'package:omega_intercom/intercom_screen.dart';
-
-const String googleMapsApiKey = "AIzaSyA-506MjOYcDfPPNgMwWXO2UeVAiVnV6j0";
+import 'package:omega_intercom/app_config.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -39,7 +38,8 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   String? _tripDistance;
   bool _isRouteVisible = false;
 
-  final places = places_sdk.FlutterGooglePlacesSdk(googleMapsApiKey);
+  places_sdk.FlutterGooglePlacesSdk? _places;
+  String? _apiKey;
   List<places_sdk.AutocompletePrediction> _predictions = [];
   String _selectedPlaceDescription = '';
   Timer? _debounce;
@@ -54,9 +54,7 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _searchCtrl.addListener(() {
       _onSearchChanged(_searchCtrl.text);
     });
-    _searchCtrl.addListener(() {
-      _onSearchChanged(_searchCtrl.text);
-    });
+    _initPlacesKey();
   }
 
   @override
@@ -68,14 +66,11 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Future<void> _loadMapStyle() async {
     final Brightness brightness = MediaQuery.of(context).platformBrightness;
-    final String stylePath = brightness == Brightness.dark
-        ? 'assets/map_styles/dark_mode.json'
-        : 'assets/map_styles/light_mode.json';
-    try {
-      _mapStyle = await DefaultAssetBundle.of(context).loadString(stylePath);
-    } catch (e) {
-      _mapStyle = null;
-    }
+    // Use cached styles loaded at startup for instant switch
+    _mapStyle = (brightness == Brightness.dark)
+        ? AppConfig.darkMapStyle
+        : AppConfig.lightMapStyle;
+    if (mounted) setState(() {});
   }
 
   Future<void> _determinePosition() async {
@@ -95,10 +90,12 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
     }
     if (permission == LocationPermission.deniedForever) {
-      _showErrorDialog('Permission de localisation refusée de manière permanente.');
+      _showErrorDialog(
+          'Permission de localisation refusée de manière permanente.');
       return;
     }
-    Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+    Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high);
     setState(() {
       _currentPosition = LatLng(position.latitude, position.longitude);
       _markers.clear();
@@ -106,7 +103,8 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         Marker(
           markerId: const MarkerId('currentPosition'),
           position: _currentPosition!,
-          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+              BitmapDescriptor.hueAzure),
           infoWindow: const InfoWindow(title: 'Ma Position'),
         ),
       );
@@ -122,10 +120,15 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ));
   }
 
-  Future<void> _getDirections(LatLng destinationCoords, String destinationDescription) async {
+  Future<void> _getDirections(LatLng destinationCoords,
+      String destinationDescription) async {
     if (_currentPosition == null) return;
 
-    String url = 'https://maps.googleapis.com/maps/api/directions/json?origin=${_currentPosition!.latitude},${_currentPosition!.longitude}&destination=${destinationCoords.latitude},${destinationCoords.longitude}&key=$googleMapsApiKey';
+    final String key = _apiKey ?? '';
+    String url = 'https://maps.googleapis.com/maps/api/directions/json?origin=${_currentPosition!
+        .latitude},${_currentPosition!
+        .longitude}&destination=${destinationCoords
+        .latitude},${destinationCoords.longitude}&key=$key';
 
     String restrictions = '';
     if (_routeOptions.avoidHighways) restrictions += 'highways|';
@@ -177,10 +180,14 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   List<LatLng> _decodePolyline(String encoded) {
     List<LatLng> points = [];
-    int index = 0, len = encoded.length;
-    int lat = 0, lng = 0;
+    int index = 0,
+        len = encoded.length;
+    int lat = 0,
+        lng = 0;
     while (index < len) {
-      int b, shift = 0, result = 0;
+      int b,
+          shift = 0,
+          result = 0;
       do {
         b = encoded.codeUnitAt(index++) - 63;
         result |= (b & 0x1f) << shift;
@@ -206,13 +213,15 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (!mounted) return;
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Erreur'),
-        content: Text(message),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK')),
-        ],
-      ),
+      builder: (context) =>
+          AlertDialog(
+            title: const Text('Erreur'),
+            content: Text(message),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('OK')),
+            ],
+          ),
     );
   }
 
@@ -232,7 +241,9 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
     _debounce = Timer(const Duration(milliseconds: 500), () async {
       if (value.isNotEmpty) {
-        final result = await places.findAutocompletePredictions(value, countries: ['fr']);
+        if (_places == null) return;
+        final result = await _places!.findAutocompletePredictions(
+            value, countries: ['fr']);
         setState(() {
           _predictions = result.predictions;
         });
@@ -244,16 +255,20 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> _onPredictionTapped(places_sdk.AutocompletePrediction prediction) async {
+  Future<void> _onPredictionTapped(
+      places_sdk.AutocompletePrediction prediction) async {
     setState(() {
       _predictions = [];
       _searchFocusNode.unfocus();
       _selectedPlaceDescription = prediction.fullText;
       _searchCtrl.text = _selectedPlaceDescription;
-      _searchCtrl.selection = TextSelection.fromPosition(TextPosition(offset: _selectedPlaceDescription.length));
+      _searchCtrl.selection = TextSelection.fromPosition(
+          TextPosition(offset: _selectedPlaceDescription.length));
     });
 
-    final placeDetails = await places.fetchPlace(prediction.placeId, fields: [places_sdk.PlaceField.Location]);
+    if (_places == null) return;
+    final placeDetails = await _places!.fetchPlace(
+        prediction.placeId, fields: [places_sdk.PlaceField.Location]);
     final location = placeDetails.place?.latLng;
 
     if (location != null) {
@@ -267,9 +282,19 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _searchFocusNode.dispose();
     _searchCtrl.dispose();
-    _searchCtrl.dispose();
     _debounce?.cancel();
     super.dispose();
+  }
+
+  Future<void> _initPlacesKey() async {
+    final key = await AppConfig.getPlacesKey();
+    if (!mounted) return;
+    setState(() {
+      _apiKey = key;
+      if (key != null && key.isNotEmpty) {
+        _places = places_sdk.FlutterGooglePlacesSdk(key);
+      }
+    });
   }
 
 
@@ -285,93 +310,105 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           if (_predictions.isNotEmpty) setState(() => _predictions = []);
         },
         child: Stack(
-        children: [
-          RepaintBoundary(child: GoogleMap(
-            mapType: MapType.normal,
-            style: _mapStyle,
-            initialCameraPosition: _kDefaultPosition,
-            markers: _markers,
-            polylines: _polylines,
-            myLocationEnabled: true,
-            myLocationButtonEnabled: false,
-            zoomControlsEnabled: false,
-            onMapCreated: (GoogleMapController controller) {
-              _controller.complete(controller);
-            },
-          )),
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 15,
-            left: 15,
-            right: 15,
-            child: Column(
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).cardColor,
-                    borderRadius: BorderRadius.circular(30),
-                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4))],
-                  ),
-                  child: Focus(
-                    onFocusChange: (has) {
-                      if (!has && _predictions.isNotEmpty) {
-                        setState(() => _predictions = []);
-                      }
-                    },
-                    child: TextField(
-                    focusNode: _searchFocusNode,
-                    controller: _searchCtrl,
-                    decoration: InputDecoration(
-                      hintText: 'Où allez-vous ?',
-                      border: InputBorder.none,
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                      prefixIcon: const Icon(Icons.search),
-                      suffixIcon: _isRouteVisible
-                          ? IconButton(icon: const Icon(Icons.close), onPressed: _cancelRoute)
-                          : null,
+          children: [
+            RepaintBoundary(child: GoogleMap(
+              mapType: MapType.normal,
+              style: _mapStyle,
+              initialCameraPosition: _kDefaultPosition,
+              markers: _markers,
+              polylines: _polylines,
+              myLocationEnabled: true,
+              myLocationButtonEnabled: false,
+              zoomControlsEnabled: false,
+              onMapCreated: (GoogleMapController controller) {
+                _controller.complete(controller);
+              },
+            )),
+            Positioned(
+              top: MediaQuery
+                  .of(context)
+                  .padding
+                  .top + 15,
+              left: 15,
+              right: 15,
+              child: Column(
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Theme
+                          .of(context)
+                          .cardColor,
+                      borderRadius: BorderRadius.circular(30),
+                      boxShadow: const [
+                        BoxShadow(color: Colors.black26,
+                            blurRadius: 10,
+                            offset: Offset(0, 4))
+                      ],
                     ),
-                    textInputAction: TextInputAction.search,
-                    enableSuggestions: true,
-                    autocorrect: true,)),
-                ),
-                if (_predictions.isNotEmpty)
-                  Material(
-                    elevation: 8,
-                    borderRadius: BorderRadius.circular(15),
-                    child: SizedBox(
-                      height: 240,
-                      child: ListView.builder(
-                        shrinkWrap: true,
-                        itemCount: _predictions.length,
-                        itemBuilder: (context, index) {
-                          final prediction = _predictions[index];
-                          return ListTile(
-                            title: Text(prediction.primaryText),
-                            subtitle: Text(prediction.secondaryText),
-                            onTap: () => _onPredictionTapped(prediction),
-                          );
+                    child: Focus(
+                        onFocusChange: (has) {
+                          if (!has && _predictions.isNotEmpty) {
+                            setState(() => _predictions = []);
+                          }
                         },
+                        child: TextField(
+                          focusNode: _searchFocusNode,
+                          controller: _searchCtrl,
+                          decoration: InputDecoration(
+                            hintText: 'Où allez-vous ?',
+                            border: InputBorder.none,
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 14),
+                            prefixIcon: const Icon(Icons.search),
+                            suffixIcon: _isRouteVisible
+                                ? IconButton(icon: const Icon(Icons.close),
+                                onPressed: _cancelRoute)
+                                : null,
+                          ),
+                          textInputAction: TextInputAction.search,
+                          enableSuggestions: true,
+                          autocorrect: true,)),
+                  ),
+                  if (_predictions.isNotEmpty)
+                    Material(
+                      elevation: 8,
+                      borderRadius: BorderRadius.circular(15),
+                      child: SizedBox(
+                        height: 240,
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: _predictions.length,
+                          itemBuilder: (context, index) {
+                            final prediction = _predictions[index];
+                            return ListTile(
+                              title: Text(prediction.primaryText),
+                              subtitle: Text(prediction.secondaryText),
+                              onTap: () => _onPredictionTapped(prediction),
+                            );
+                          },
+                        ),
                       ),
                     ),
-                  ),
-              ],
-            ),
-          ),
-
-          if (!_isRouteVisible)
-            RouteOptionsPanel(
-              onOptionsChanged: (options) {
-                _routeOptions = options;
-              },
+                ],
+              ),
             ),
 
-          if (_isRouteVisible && _tripDistance != null && _tripDuration != null)
-            TripInfoPanel(
-              duration: _tripDuration!,
-              distance: _tripDistance!,
-              onCancel: _cancelRoute,
-            ),
-        ],
-      ),
+            if (!_isRouteVisible)
+              RouteOptionsPanel(
+                onOptionsChanged: (options) {
+                  _routeOptions = options;
+                },
+              ),
+
+            if (_isRouteVisible && _tripDistance != null &&
+                _tripDuration != null)
+              TripInfoPanel(
+                duration: _tripDuration!,
+                distance: _tripDistance!,
+                onCancel: _cancelRoute,
+              ),
+          ],
+        ),
       ),
       // --- MODIFICATION DES BOUTONS FLOTTANTS ---
       floatingActionButton: Column(
@@ -393,7 +430,10 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 MaterialPageRoute(builder: (context) => const IntercomScreen()),
               );
             },
-            backgroundColor: Theme.of(context).colorScheme.secondary,
+            backgroundColor: Theme
+                .of(context)
+                .colorScheme
+                .secondary,
             child: const Icon(Icons.podcasts),
           ),
         ],
@@ -401,6 +441,3 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 }
-
-
-

@@ -5,13 +5,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:omega_intercom/audio_processor.dart';
 
 enum ConnectionMode { lan, internet }
 
@@ -88,6 +88,11 @@ class IntercomService {
   StreamSubscription<Uint8List>? _micSub;
 
   final _native = _NativePlayer();
+  final AudioProcessor _proc = AudioProcessor();
+  // Jitter buffer toggle (runtime)
+  bool _jitterEnabled = true;
+  _JitterBuffer? _jb;
+  int _txSeq = 0;
 
   bool _initialized = false;
 
@@ -118,8 +123,7 @@ class IntercomService {
   int _micHighCutHz = 0;
   int _playLowCutHz = 0;
   int _playHighCutHz = 0;
-  _Biquad? _fMicHP;
-  _Biquad? _fMicLP;
+  // Mic EQ handled in AudioProcessor isolate; keep only playback EQ here
   _Biquad? _fPlayHP;
   _Biquad? _fPlayLP;
 
@@ -203,6 +207,8 @@ class IntercomService {
     _echoEnabled = _prefs!.getBool('echo_enabled') ?? _echoEnabled;
     _echoStrength = _prefs!.getDouble('echo_strength') ?? _echoStrength;
     _echoThreshold = _prefs!.getInt('echo_threshold') ?? _echoThreshold;
+    _jitterEnabled = _prefs!.getBool('jitter_enabled') ?? _jitterEnabled;
+    _autoFullDuplex = _prefs!.getBool('auto_full_duplex') ?? _autoFullDuplex;
     _rebuildFilters();
     _prefsLoaded = true;
   }
@@ -223,6 +229,9 @@ class IntercomService {
   bool get echoSuppressEnabled => _echoEnabled;
   double get echoSuppressStrength => _echoStrength;
   int get echoThreshold => _echoThreshold;
+  bool get jitterEnabled => _jitterEnabled;
+  bool _autoFullDuplex = true;
+  bool get autoFullDuplex => _autoFullDuplex;
 
   Future<void> setDisplayName(String name) async {
     await _ensurePrefs();
@@ -250,6 +259,7 @@ class IntercomService {
     await _ensurePrefs();
     _micGain = g.clamp(0.0, 2.0);
     await _prefs!.setDouble('mic_gain', _micGain);
+    await _pushProcConfig();
   }
 
   Future<void> setDuckFactor(double f) async {
@@ -263,12 +273,14 @@ class IntercomService {
     await _ensurePrefs();
     _gateNorm = (level / 1000.0).clamp(0.0, 1.0);
     await _prefs!.setDouble('gate_norm', _gateNorm);
+    await _pushProcConfig();
   }
 
   Future<void> setGateThreshold(double t) async {
     await _ensurePrefs();
     _gateNorm = t.clamp(0.0, 1.0);
     await _prefs!.setDouble('gate_norm', _gateNorm);
+    await _pushProcConfig();
   }
 
   Future<void> setMicLowCutHz(int hz) async {
@@ -276,6 +288,7 @@ class IntercomService {
     _micLowCutHz = hz.clamp(0, _sampleRate ~/ 2 - 1);
     await _prefs!.setInt('mic_low_cut_hz', _micLowCutHz);
     _rebuildFilters();
+    await _pushProcConfig();
   }
 
   Future<void> setMicHighCutHz(int hz) async {
@@ -283,6 +296,7 @@ class IntercomService {
     _micHighCutHz = hz.clamp(0, _sampleRate ~/ 2 - 1);
     await _prefs!.setInt('mic_high_cut_hz', _micHighCutHz);
     _rebuildFilters();
+    await _pushProcConfig();
   }
 
   Future<void> setPlaybackLowCutHz(int hz) async {
@@ -303,18 +317,33 @@ class IntercomService {
     await _ensurePrefs();
     _echoEnabled = enabled;
     await _prefs!.setBool('echo_enabled', _echoEnabled);
+    await _pushProcConfig();
   }
 
   Future<void> setEchoSuppressStrength(double strength) async {
     await _ensurePrefs();
     _echoStrength = strength.clamp(0.0, 1.0);
     await _prefs!.setDouble('echo_strength', _echoStrength);
+    await _pushProcConfig();
   }
 
   Future<void> setEchoThreshold(int level) async {
     await _ensurePrefs();
     _echoThreshold = level.clamp(0, 5000);
     await _prefs!.setInt('echo_threshold', _echoThreshold);
+    await _pushProcConfig();
+  }
+
+  Future<void> setJitterEnabled(bool enabled) async {
+    await _ensurePrefs();
+    _jitterEnabled = enabled;
+    await _prefs!.setBool('jitter_enabled', _jitterEnabled);
+  }
+
+  Future<void> setAutoFullDuplex(bool enabled) async {
+    await _ensurePrefs();
+    _autoFullDuplex = enabled;
+    await _prefs!.setBool('auto_full_duplex', _autoFullDuplex);
   }
 
   Future<void> resetSettings() async {
@@ -441,6 +470,17 @@ class IntercomService {
 
     // Start native player
     await _native.start(sampleRate: _sampleRate);
+    // Start audio processor isolate
+    await _proc.start(AudioProcessorConfig(
+      sampleRate: _sampleRate,
+      micLowCutHz: _micLowCutHz,
+      micHighCutHz: _micHighCutHz,
+      gateNorm: _gateNorm,
+      echoEnabled: _echoEnabled,
+      echoStrength: _echoStrength,
+      echoThreshold: _echoThreshold,
+      micGain: _micGain,
+    ));
 
     // LAN discovery
     _discoverySock = await RawDatagramSocket.bind(
@@ -498,59 +538,42 @@ class IntercomService {
       ),
     );
     _micSub?.cancel();
-    _micSub = stream.listen((Uint8List chunk) {
-      try {
-        if (chunk.isEmpty) return;
-        if (!_passesNoiseGate(chunk)) return;
-        // EQ mic
-        Uint8List proc = chunk;
-        if (_fMicHP != null || _fMicLP != null) {
-          proc = _applyEqPcm16(Uint8List.fromList(proc), _fMicHP, _fMicLP);
-        }
-        // Update mic level (avg abs amplitude normalized)
+    final micQueue = <Uint8List>[];
+    bool processing = false;
+    Future<void> drain() async {
+      if (processing) return; processing = true;
+      while (micQueue.isNotEmpty) {
+        final chunk = micQueue.removeAt(0);
         try {
-          final bd = ByteData.view(proc.buffer, 0, proc.lengthInBytes);
-          int count = 0; int sum = 0;
-          for (int i = 0; i < proc.lengthInBytes; i += 2) { int s = bd.getInt16(i, Endian.little); if (s < 0) s = -s; sum += s; count++; }
-          if (count > 0) {
-            final lvl = (sum / count) / 32768.0;
-            _micLevelC.add(lvl.clamp(0.0, 1.0));
+          final res = await _proc.process(chunk, _rxEma);
+          if (res == null || res.pcm.isEmpty) continue;
+          _micLevelC.add(res.micLevel.clamp(0.0, 1.0));
+          final idBytes = utf8.encode(_selfId);
+          final headerLen = 4 + idBytes.length + 2 + 4;
+          final data = Uint8List(headerLen + res.pcm.length);
+          final b = data.buffer.asUint8List();
+          b[0] = 0x49; b[1] = 0x43; b[2] = 0x02; b[3] = idBytes.length & 0xFF;
+          b.setRange(4, 4 + idBytes.length, idBytes);
+          final seq = _txSeq & 0xFFFF; _txSeq = (_txSeq + 1) & 0xFFFF;
+          final ts = DateTime.now().millisecondsSinceEpoch & 0xFFFFFFFF;
+          final bd = ByteData.view(b.buffer);
+          final offSeq = 4 + idBytes.length;
+          bd.setUint16(offSeq, seq, Endian.little);
+          bd.setUint32(offSeq + 2, ts, Endian.little);
+          b.setRange(offSeq + 6, data.length, res.pcm);
+          if (_mode == ConnectionMode.lan) {
+            for (final p in _lanPeers.values) { _audioSock?.send(data, p.address, p.port); }
+          } else {
+            final dst = _serverAddress; if (dst != null) _audioSock?.send(data, dst, _serverPort);
           }
-        } catch (_) {}
-        // Prepare packet: 'IC' + 0x01 + idLen + selfId + PCM16
-        final idBytes = utf8.encode(_selfId);
-        final headerLen = 4 + idBytes.length;
-        // Mic gain and echo suppression
-        Uint8List micPcm = proc;
-        if (_echoEnabled && _rxEma > _echoThreshold) {
-          final double factor = (1.0 - _echoStrength).clamp(0.0, 1.0);
-          if (factor < 1.0) {
-            micPcm = _applyGainPcm16(Uint8List.fromList(micPcm), factor);
-          }
-        }
-        if (_micGain != 1.0) {
-          micPcm = _applyGainPcm16(Uint8List.fromList(micPcm), _micGain);
-        }
-        final data = Uint8List(headerLen + micPcm.length);
-        final b = data.buffer.asUint8List();
-        b[0] = 0x49; // 'I'
-        b[1] = 0x43; // 'C'
-        b[2] = 0x01; // version
-        b[3] = idBytes.length & 0xFF;
-        b.setRange(4, 4 + idBytes.length, idBytes);
-        b.setRange(4 + idBytes.length, data.length, micPcm);
-
-        if (_mode == ConnectionMode.lan) {
-          for (final p in _lanPeers.values) {
-            _audioSock?.send(data, p.address, p.port);
-          }
-        } else {
-          final dst = _serverAddress;
-          if (dst != null) _audioSock?.send(data, dst, _serverPort);
-        }
-      } catch (e) {
-        _log('Erreur envoi UDP: $e');
+        } catch (e) { _log('Erreur envoi UDP: $e'); }
       }
+      processing = false;
+    }
+    _micSub = stream.listen((Uint8List chunk) {
+      if (chunk.isEmpty) return;
+      if (micQueue.length < 8) micQueue.add(chunk);
+      unawaited(drain());
     });
     _isTalking = true;
     _log('Capture micro démarrée');
@@ -577,6 +600,9 @@ class IntercomService {
     await _native.stop();
     _audioSock?.close();
     _audioSock = null;
+    _proc.stop();
+    _jb?.stop();
+    _jb = null;
     _presenceTimer?.cancel();
     _presenceTimer = null;
     _initialized = false;
@@ -639,25 +665,7 @@ class IntercomService {
     }
   }
 
-  // Simple noise gate: compare RMS to threshold
-  bool _passesNoiseGate(Uint8List pcm) {
-    try {
-      if (pcm.lengthInBytes < 2) return false;
-      final bd = ByteData.view(pcm.buffer, 0, pcm.lengthInBytes);
-      double acc = 0.0;
-      int count = 0;
-      for (int i = 0; i < pcm.lengthInBytes; i += 2) {
-        final s = bd.getInt16(i, Endian.little).toDouble();
-        acc += s * s;
-        count++;
-      }
-      if (count == 0) return false;
-      final rms = sqrt(acc / count) / 32768.0;
-      return rms > _gateNorm;
-    } catch (_) {
-      return true;
-    }
-  }
+  // Mic gating handled in AudioProcessor isolate; no additional gate here.
 
   // ===== UDP: audio reception =====
   DateTime _lastRxLog = DateTime.fromMillisecondsSinceEpoch(0);
@@ -669,7 +677,14 @@ class IntercomService {
 
     // Control messages (PEERS / PRES / GONE)
     try {
-      if (bytes.length >= 6 && bytes[0] == 0x49 && bytes[1] == 0x43) {
+      // Fast-path: only decode UTF-8 if it's clearly a control message starting with 'ICSV1|'
+      if (bytes.length >= 6 &&
+          bytes[0] == 0x49 /* I */ &&
+          bytes[1] == 0x43 /* C */ &&
+          bytes[2] == 0x53 /* S */ &&
+          bytes[3] == 0x56 /* V */ &&
+          bytes[4] == 0x31 /* 1 */ &&
+          bytes[5] == 0x7C /* '|' */) {
         final txt = utf8.decode(bytes, allowMalformed: true);
         if (txt.startsWith('ICSV1|PEERS|')) {
           final parts = txt.split('|');
@@ -728,15 +743,34 @@ class IntercomService {
       }
     } catch (_) {}
 
-    // Audio packet: IC|01|idLen|id|pcm16
+    // Audio packet: v1 IC|01|idLen|id|pcm16  OR v2 IC|02|idLen|id|seq:uint16|ts:uint32|pcm16
     Uint8List payload;
+    int? seq;
     try {
-      if (bytes.length >= 4 && bytes[0] == 0x49 && bytes[1] == 0x43 && bytes[2] == 0x01) {
-        final idLen = bytes[3] & 0xFF;
-        if (bytes.length >= 4 + idLen) {
-          final senderId = utf8.decode(bytes.sublist(4, 4 + idLen));
-          if (senderId == _selfId) return; // mix-minus
-          payload = bytes.sublist(4 + idLen);
+      if (bytes.length >= 4 && bytes[0] == 0x49 && bytes[1] == 0x43) {
+        final ver = bytes[2] & 0xFF;
+        if (ver == 0x01) {
+          final idLen = bytes[3] & 0xFF;
+          if (bytes.length >= 4 + idLen) {
+            final senderId = utf8.decode(bytes.sublist(4, 4 + idLen));
+            if (senderId == _selfId) return; // mix-minus
+            payload = bytes.sublist(4 + idLen);
+          } else {
+            payload = bytes;
+          }
+        } else if (ver == 0x02) {
+          final idLen = bytes[3] & 0xFF;
+          if (bytes.length >= 4 + idLen + 6) {
+            final senderId = utf8.decode(bytes.sublist(4, 4 + idLen));
+            if (senderId == _selfId) return;
+            final offSeq = 4 + idLen;
+            final bd = ByteData.sublistView(bytes);
+            seq = bd.getUint16(offSeq, Endian.little);
+            // final ts = bd.getUint32(offSeq + 2, Endian.little); // reserved
+            payload = bytes.sublist(offSeq + 6);
+          } else {
+            payload = bytes;
+          }
         } else {
           payload = bytes;
         }
@@ -750,7 +784,7 @@ class IntercomService {
     if (payload.isNotEmpty) {
       Uint8List toPlay = payload;
       try {
-        if (bytes.length >= 4 && bytes[0] == 0x49 && bytes[1] == 0x43 && bytes[2] == 0x01) {
+        if (bytes.length >= 4 && bytes[0] == 0x49 && bytes[1] == 0x43) {
           final idLen = bytes[3] & 0xFF;
           if (bytes.length >= 4 + idLen) {
             final sid = utf8.decode(bytes.sublist(4, 4 + idLen), allowMalformed: true);
@@ -772,9 +806,23 @@ class IntercomService {
       if (globalGain != 1.0) {
         toPlay = _applyGainPcm16(Uint8List.fromList(toPlay), globalGain);
       }
-      _native.write(toPlay);
+      if (_jitterEnabled) {
+        _jb ??= _JitterBuffer(sampleRate: _sampleRate, onDequeue: (chunk) {
+          _native.write(chunk);
+        });
+        final jb = _jb;
+        if (jb != null) {
+          if (seq != null) {
+            jb.enqueueWithSeq(seq, toPlay);
+          } else {
+            jb.enqueue(toPlay);
+          }
+        }
+      } else {
+        _native.write(toPlay);
+      }
 
-      // Update playback energy EMA for echo suppression
+      // Update playback energy EMA for echo suppression and out-level
       try {
         final bd = ByteData.view(toPlay.buffer, 0, toPlay.lengthInBytes);
         int count = 0;
@@ -788,6 +836,8 @@ class IntercomService {
         if (count > 0) {
           final avg = sum / count;
           _rxEma = _rxEma * (1 - _rxEmaAlpha) + avg * _rxEmaAlpha;
+          final double outLevel = (_rxEma / 32768.0).clamp(0.0, 1.0);
+          _outLevelC.add(outLevel);
         }
       } catch (_) {}
     }
@@ -936,18 +986,27 @@ class IntercomService {
   Future<void> _stopFgService() async { await _FgService.stop(); }
 
   void _rebuildFilters() {
-    _fMicHP = (_micLowCutHz > 0)
-        ? _Biquad.highPass(_sampleRate.toDouble(), _micLowCutHz.toDouble())
-        : null;
-    _fMicLP = (_micHighCutHz > 0)
-        ? _Biquad.lowPass(_sampleRate.toDouble(), _micHighCutHz.toDouble())
-        : null;
     _fPlayHP = (_playLowCutHz > 0)
         ? _Biquad.highPass(_sampleRate.toDouble(), _playLowCutHz.toDouble())
         : null;
     _fPlayLP = (_playHighCutHz > 0)
         ? _Biquad.lowPass(_sampleRate.toDouble(), _playHighCutHz.toDouble())
         : null;
+  }
+
+  Future<void> _pushProcConfig() async {
+    try {
+      await _proc.update(AudioProcessorConfig(
+        sampleRate: _sampleRate,
+        micLowCutHz: _micLowCutHz,
+        micHighCutHz: _micHighCutHz,
+        gateNorm: _gateNorm,
+        echoEnabled: _echoEnabled,
+        echoStrength: _echoStrength,
+        echoThreshold: _echoThreshold,
+        micGain: _micGain,
+      ));
+    } catch (_) {}
   }
 }
 
@@ -991,5 +1050,89 @@ class _Biquad {
     _z1 = b1 * x - a1 * y + _z2;
     _z2 = b2 * x - a2 * y;
     return y;
+  }
+}
+
+// ===== Simple jitter buffer (ordered by seq, basic) =====
+class _JitterBuffer {
+  final int sampleRate;
+  final void Function(Uint8List) onDequeue;
+  final List<Uint8List> _queue = <Uint8List>[]; // fallback FIFO
+  Timer? _timer;
+  int? _frameBytes; // learned from first packet
+  final Map<int, Uint8List> _buffer = <int, Uint8List>{};
+  int? _expected;
+  final int _maxBuffer = 10;
+  int _target = 3; // target frames buffered
+
+  _JitterBuffer({required this.sampleRate, required this.onDequeue});
+
+  void enqueue(Uint8List chunk) {
+    if (chunk.isEmpty) return;
+    _queue.add(chunk);
+    _frameBytes ??= chunk.lengthInBytes;
+    _ensureTimer();
+  }
+
+  void enqueueWithSeq(int seq, Uint8List chunk) {
+    _buffer[seq & 0xFFFF] = chunk;
+    if (_expected == null) {
+      // choose the smallest seq as starting point
+      _expected = _buffer.keys.isEmpty ? (seq & 0xFFFF) : _buffer.keys.reduce((a, b) => a <= b ? a : b);
+    }
+    _ensureTimer();
+  }
+
+  void _ensureTimer() {
+    final bytes = _frameBytes;
+    // Estimate frame duration from bytes (PCM16 mono)
+    final int frameSamples = (bytes != null && bytes > 0) ? (bytes ~/ 2) : (sampleRate ~/ 50); // ~20ms fallback
+    final int frameMs = (1000 * frameSamples ~/ sampleRate).clamp(5, 60);
+    _timer ??= Timer.periodic(Duration(milliseconds: frameMs), (_) {
+      if (_buffer.isNotEmpty) {
+        // Ordered drain by expected sequence
+        _expected ??= _buffer.keys.reduce((a, b) => a <= b ? a : b);
+        final exp = _expected! & 0xFFFF;
+        final chunk = _buffer.remove(exp);
+        if (chunk != null) {
+          onDequeue(chunk);
+          _expected = (exp + 1) & 0xFFFF;
+        } else {
+          // If buffer grows too much, reduce latency by popping the smallest sequence
+          if (_buffer.length > _maxBuffer) {
+            final minKey = _buffer.keys.reduce((a, b) => a <= b ? a : b);
+            final forced = _buffer.remove(minKey);
+            if (forced != null) onDequeue(forced);
+            _expected = (minKey + 1) & 0xFFFF;
+          }
+        }
+        // Simple adaptation: if buffer still much larger than target, dequeue an extra frame
+        if (_buffer.length > _target + 3) {
+          final nextKey = _buffer.keys.reduce((a, b) => a <= b ? a : b);
+          final forced2 = _buffer.remove(nextKey);
+          if (forced2 != null) onDequeue(forced2);
+          _expected = (nextKey + 1) & 0xFFFF;
+        }
+        // If buffer often underflows, increase target slightly; if often large, decrease a bit.
+        if (_buffer.length <= 1 && _target < 5) {
+          _target++;
+        } else if (_buffer.length > 6 && _target > 2) {
+          _target--;
+        }
+      } else if (_queue.isNotEmpty) {
+        // Fallback FIFO if no seq info
+        final chunk = _queue.removeAt(0);
+        onDequeue(chunk);
+      }
+    });
+  }
+
+  void stop() {
+    _timer?.cancel();
+    _timer = null;
+    _queue.clear();
+    _frameBytes = null;
+    _buffer.clear();
+    _expected = null;
   }
 }

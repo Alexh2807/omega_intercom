@@ -22,6 +22,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _playHighCut = 0;
   bool _echoEnabled = false;
   double _echoStrength = 0.6;
+  bool _jitter = true;
+  bool _autoFullDuplex = true;
 
   @override
   void initState() {
@@ -38,6 +40,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _playHighCut = widget.intercom.playbackHighCutHz;
     _echoEnabled = widget.intercom.echoSuppressEnabled;
     _echoStrength = widget.intercom.echoSuppressStrength;
+    _jitter = widget.intercom.jitterEnabled;
+    _autoFullDuplex = widget.intercom.autoFullDuplex;
   }
 
   @override
@@ -84,7 +88,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         return LayoutBuilder(
                           builder: (context, constraints) {
                             final w = constraints.maxWidth;
-                            final h = 14.0;
+                            const h = 14.0;
                             final levelW = (v * w).clamp(0.0, w);
                             final thrW = (_gateNorm * w).clamp(0.0, w);
                             return GestureDetector(
@@ -248,7 +252,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text('Coupe-bas (Hz)'),
-              Text(_micLowCut == 0 ? 'Off' : '${_micLowCut} Hz'),
+              Text(_micLowCut == 0 ? 'Off' : '$_micLowCut Hz'),
             ],
           ),
           Slider(
@@ -262,7 +266,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text('Coupe-haut (Hz)'),
-              Text(_micHighCut == 0 ? 'Off' : '${_micHighCut} Hz'),
+              Text(_micHighCut == 0 ? 'Off' : '$_micHighCut Hz'),
             ],
           ),
           Slider(
@@ -279,7 +283,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text('Coupe-bas (Hz)'),
-              Text(_playLowCut == 0 ? 'Off' : '${_playLowCut} Hz'),
+              Text(_playLowCut == 0 ? 'Off' : '$_playLowCut Hz'),
             ],
           ),
           Slider(
@@ -293,7 +297,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text('Coupe-haut (Hz)'),
-              Text(_playHighCut == 0 ? 'Off' : '${_playHighCut} Hz'),
+              Text(_playHighCut == 0 ? 'Off' : '$_playHighCut Hz'),
             ],
           ),
           Slider(
@@ -302,6 +306,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             max: 8000,
             divisions: 80,
             onChanged: (v) => setState(() => _playHighCut = v.round()),
+          ),
+          const SizedBox(height: 12),
+          const Divider(),
+          const SizedBox(height: 8),
+          const Text('Réseau/Latence', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Tampon anti-gigue (jitter buffer)'),
+              Switch(value: _jitter, onChanged: (v) => setState(() => _jitter = v)),
+            ],
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Expanded(child: Text('Démarrer le micro automatiquement (full‑duplex)')),
+              Switch(value: _autoFullDuplex, onChanged: (v) => setState(() => _autoFullDuplex = v)),
+            ],
           ),
           const SizedBox(height: 12),
           const Divider(),
@@ -368,6 +391,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await widget.intercom.setPlaybackHighCutHz(_playHighCut);
     await widget.intercom.setEchoSuppressEnabled(_echoEnabled);
     await widget.intercom.setEchoSuppressStrength(_echoStrength);
+    await widget.intercom.setJitterEnabled(_jitter);
+    await widget.intercom.setAutoFullDuplex(_autoFullDuplex);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Parametres enregistres')),
