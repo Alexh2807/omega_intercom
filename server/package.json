@@ -1,16 +1,18 @@
 {
   "name": "omega-intercom-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "UDP audio relay for Omega Intercom (mix-minus client-side)",
-  "main": "index.js",
+  "description": "WebRTC signaling server for Omega Intercom",
+  "main": "signaling_server.js",
   "scripts": {
-    "start": "node udp_relay.js",
-    "start:dev": "node udp_relay.js --port 55667 --verbose"
+    "start": "node signaling_server.js"
   },
-  "keywords": ["udp", "audio", "intercom", "relay"],
+  "keywords": ["webrtc", "signaling", "intercom"],
   "author": "",
   "license": "UNLICENSED",
+  "dependencies": {
+    "ws": "^8.14.2"
+  },
   "engines": {
     "node": ">=14"
   }

@@ -4,7 +4,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:flutter_google_places_sdk/flutter_google_places_sdk.dart' as places_sdk;
+// PLACES-DISABLED: import 'package:flutter_google_places_sdk/flutter_google_places_sdk.dart' as places_sdk;
 import 'package:omega_intercom/route_options_panel.dart';
 import 'package:omega_intercom/trip_info_panel.dart';
 // Nouvel import pour la page intercom
@@ -38,23 +38,29 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   String? _tripDistance;
   bool _isRouteVisible = false;
 
-  places_sdk.FlutterGooglePlacesSdk? _places;
+  // PLACES-DISABLED:
+  // places_sdk.FlutterGooglePlacesSdk? _places;
   String? _apiKey;
-  List<places_sdk.AutocompletePrediction> _predictions = [];
+  // List<places_sdk.AutocompletePrediction> _predictions = [];
   String _selectedPlaceDescription = '';
-  Timer? _debounce;
+  // Timer? _debounce;
 
-  // ... (Toutes les fonctions comme initState, _determinePosition, _getDirections etc. ne changent pas)
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadMapStyle();
     _determinePosition();
-    _searchCtrl.addListener(() {
-      _onSearchChanged(_searchCtrl.text);
-    });
-    _initPlacesKey();
+    // PLACES-DISABLED:
+    // _searchCtrl.addListener(() {
+    //   _onSearchChanged(_searchCtrl.text);
+    // });
+    // _initPlacesKey();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _loadMapStyle();
   }
 
   @override
@@ -66,7 +72,6 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Future<void> _loadMapStyle() async {
     final Brightness brightness = MediaQuery.of(context).platformBrightness;
-    // Use cached styles loaded at startup for instant switch
     _mapStyle = (brightness == Brightness.dark)
         ? AppConfig.darkMapStyle
         : AppConfig.lightMapStyle;
@@ -174,7 +179,7 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         _showErrorDialog('Aucun itinéraire trouvé avec ces options.');
       }
     } else {
-      _showErrorDialog('Erreur lors du calcul de l\'itinéraire.');
+      _showErrorDialog("Erreur lors du calcul de l'itineraire.");
     }
   }
 
@@ -233,72 +238,73 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _tripDistance = null;
       _tripDuration = null;
       _selectedPlaceDescription = '';
-      _predictions = [];
+      // PLACES-DISABLED: _predictions = [];
     });
   }
 
-  void _onSearchChanged(String value) {
-    if (_debounce?.isActive ?? false) _debounce!.cancel();
-    _debounce = Timer(const Duration(milliseconds: 500), () async {
-      if (value.isNotEmpty) {
-        if (_places == null) return;
-        final result = await _places!.findAutocompletePredictions(
-            value, countries: ['fr']);
-        setState(() {
-          _predictions = result.predictions;
-        });
-      } else {
-        setState(() {
-          _predictions = [];
-        });
-      }
-    });
-  }
+  // PLACES-DISABLED:
+  // void _onSearchChanged(String value) {
+  //   if (_debounce?.isActive ?? false) _debounce!.cancel();
+  //   _debounce = Timer(const Duration(milliseconds: 500), () async {
+  //     if (value.isNotEmpty) {
+  //       if (_places == null) return;
+  //       final result = await _places!.findAutocompletePredictions(
+  //           value, countries: ['fr']);
+  //       setState(() {
+  //         _predictions = result.predictions;
+  //       });
+  //     } else {
+  //       setState(() {
+  //         _predictions = [];
+  //       });
+  //     }
+  //   });
+  // }
 
-  Future<void> _onPredictionTapped(
-      places_sdk.AutocompletePrediction prediction) async {
-    setState(() {
-      _predictions = [];
-      _searchFocusNode.unfocus();
-      _selectedPlaceDescription = prediction.fullText;
-      _searchCtrl.text = _selectedPlaceDescription;
-      _searchCtrl.selection = TextSelection.fromPosition(
-          TextPosition(offset: _selectedPlaceDescription.length));
-    });
+  // PLACES-DISABLED:
+  // Future<void> _onPredictionTapped(
+  //     places_sdk.AutocompletePrediction prediction) async {
+  //   setState(() {
+  //     _predictions = [];
+  //     _searchFocusNode.unfocus();
+  //     _selectedPlaceDescription = prediction.fullText;
+  //     _searchCtrl.text = _selectedPlaceDescription;
+  //     _searchCtrl.selection = TextSelection.fromPosition(
+  //         TextPosition(offset: _selectedPlaceDescription.length));
+  //   });
 
-    if (_places == null) return;
-    final placeDetails = await _places!.fetchPlace(
-        prediction.placeId, fields: [places_sdk.PlaceField.Location]);
-    final location = placeDetails.place?.latLng;
+  //   if (_places == null) return;
+  //   final placeDetails = await _places!.fetchPlace(
+  //       prediction.placeId, fields: [places_sdk.PlaceField.Location]);
+  //   final location = placeDetails.place?.latLng;
 
-    if (location != null) {
-      final mapLatLng = LatLng(location.lat, location.lng);
-      _getDirections(mapLatLng, prediction.fullText);
-    }
-  }
+  //   if (location != null) {
+  //     final mapLatLng = LatLng(location.lat, location.lng);
+  //     _getDirections(mapLatLng, prediction.fullText);
+  //   }
+  // }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _searchFocusNode.dispose();
     _searchCtrl.dispose();
-    _debounce?.cancel();
+    // PLACES-DISABLED: _debounce?.cancel();
     super.dispose();
   }
 
-  Future<void> _initPlacesKey() async {
-    final key = await AppConfig.getPlacesKey();
-    if (!mounted) return;
-    setState(() {
-      _apiKey = key;
-      if (key != null && key.isNotEmpty) {
-        _places = places_sdk.FlutterGooglePlacesSdk(key);
-      }
-    });
-  }
+  // PLACES-DISABLED:
+  // Future<void> _initPlacesKey() async {
+  //   final key = await AppConfig.getPlacesKey();
+  //   if (!mounted) return;
+  //   setState(() {
+  //     _apiKey = key;
+  //     if (key != null && key.isNotEmpty) {
+  //       _places = places_sdk.FlutterGooglePlacesSdk(key);
+  //     }
+  //   });
+  // }
 
-
-  // --- LA SEULE PARTIE MODIFIÉE EST LA FONCTION BUILD ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -307,7 +313,7 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         behavior: HitTestBehavior.opaque,
         onTap: () {
           if (_searchFocusNode.hasFocus) _searchFocusNode.unfocus();
-          if (_predictions.isNotEmpty) setState(() => _predictions = []);
+          // PLACES-DISABLED: if (_predictions.isNotEmpty) setState(() => _predictions = []);
         },
         child: Stack(
           children: [
@@ -347,9 +353,10 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     ),
                     child: Focus(
                         onFocusChange: (has) {
-                          if (!has && _predictions.isNotEmpty) {
-                            setState(() => _predictions = []);
-                          }
+                          // PLACES-DISABLED:
+                          // if (!has && _predictions.isNotEmpty) {
+                          //   setState(() => _predictions = []);
+                          // }
                         },
                         child: TextField(
                           focusNode: _searchFocusNode,
@@ -369,26 +376,27 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                           enableSuggestions: true,
                           autocorrect: true,)),
                   ),
-                  if (_predictions.isNotEmpty)
-                    Material(
-                      elevation: 8,
-                      borderRadius: BorderRadius.circular(15),
-                      child: SizedBox(
-                        height: 240,
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: _predictions.length,
-                          itemBuilder: (context, index) {
-                            final prediction = _predictions[index];
-                            return ListTile(
-                              title: Text(prediction.primaryText),
-                              subtitle: Text(prediction.secondaryText),
-                              onTap: () => _onPredictionTapped(prediction),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
+                  // PLACES-DISABLED:
+                  // if (_predictions.isNotEmpty)
+                  //   Material(
+                  //     elevation: 8,
+                  //     borderRadius: BorderRadius.circular(15),
+                  //     child: SizedBox(
+                  //       height: 240,
+                  //       child: ListView.builder(
+                  //         shrinkWrap: true,
+                  //         itemCount: _predictions.length,
+                  //         itemBuilder: (context, index) {
+                  //           final prediction = _predictions[index];
+                  //           return ListTile(
+                  //             title: Text(prediction.primaryText),
+                  //             subtitle: Text(prediction.secondaryText),
+                  //             onTap: () => _onPredictionTapped(prediction),
+                  //           );
+                  //         },
+                  //       ),
+                  //     ),
+                  //   ),
                 ],
               ),
             ),
@@ -410,7 +418,6 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ],
         ),
       ),
-      // --- MODIFICATION DES BOUTONS FLOTTANTS ---
       floatingActionButton: Column(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
@@ -420,11 +427,9 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             child: const Icon(Icons.my_location),
           ),
           const SizedBox(height: 10),
-          // BOUTON MODIFIÉ POUR OUVRIR LA PAGE INTERCOM
           FloatingActionButton(
             heroTag: 'intercom_btn',
             onPressed: () {
-              // Action de navigation vers la nouvelle page
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const IntercomScreen()),

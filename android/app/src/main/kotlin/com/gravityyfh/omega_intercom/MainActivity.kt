@@ -106,6 +106,8 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        
+
         // Debug metrics channel: returns CPU% (app), MEM% (device used), app PSS MB
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, metricsChannelName)
             .setMethodCallHandler { call: MethodCall, result: MethodChannel.Result ->
@@ -237,16 +239,13 @@ class MainActivity : FlutterActivity() {
             }
             try {
                 while (running.get()) {
-                    val data = queue?.poll()
-                    if (data == null) {
-                        // Fine-grained wait to keep latency low
-                        try { Thread.sleep(5) } catch (_: InterruptedException) {}
-                        continue
-                    }
+                    // PERF: file bloquante pour �viter le busy-wait et stabiliser la latence
+                    val data = try { queue?.take() } catch (_: InterruptedException) { null } ?: continue
                     var offset = 0
                     while (offset < data.size && running.get()) {
+                        // PERF: WRITE_BLOCKING assure un d�bit stable
                         val written = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                            track.write(data, offset, data.size - offset, AudioTrack.WRITE_NON_BLOCKING)
+                            track.write(data, offset, data.size - offset, AudioTrack.WRITE_BLOCKING)
                         } else {
                             @Suppress("DEPRECATION")
                             track.write(data, offset, data.size - offset)
