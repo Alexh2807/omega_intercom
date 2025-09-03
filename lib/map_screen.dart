@@ -2,8 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
+
 // PLACES-DISABLED: import 'package:flutter_google_places_sdk/flutter_google_places_sdk.dart' as places_sdk;
 import 'package:omega_intercom/route_options_panel.dart';
 import 'package:omega_intercom/trip_info_panel.dart';
@@ -33,16 +32,15 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   LatLng? _currentPosition;
   String? _mapStyle;
 
-  RouteOptions _routeOptions = RouteOptions();
   String? _tripDuration;
   String? _tripDistance;
   bool _isRouteVisible = false;
 
-  // PLACES-DISABLED:
-  // places_sdk.FlutterGooglePlacesSdk? _places;
-  String? _apiKey;
+  RouteOptions _routeOptions = RouteOptions();
+
+  
   // List<places_sdk.AutocompletePrediction> _predictions = [];
-  String _selectedPlaceDescription = '';
+  
   // Timer? _debounce;
 
   @override
@@ -125,94 +123,93 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ));
   }
 
-  Future<void> _getDirections(LatLng destinationCoords,
-      String destinationDescription) async {
-    if (_currentPosition == null) return;
+  // Future<void> _getDirections(LatLng destinationCoords,
+  //     String destinationDescription) async {
+  //   if (_currentPosition == null) return;
 
-    final String key = _apiKey ?? '';
-    String url = 'https://maps.googleapis.com/maps/api/directions/json?origin=${_currentPosition!
-        .latitude},${_currentPosition!
-        .longitude}&destination=${destinationCoords
-        .latitude},${destinationCoords.longitude}&key=$key';
+  //   final String key = _apiKey ?? '';
+  //   String url = 'https://maps.googleapis.com/maps/api/directions/json?origin=${_currentPosition!
+  //       .latitude},${_currentPosition!
+  //       .longitude}&destination=${destinationCoords
+  //       .latitude},${destinationCoords.longitude}&key=$key';
 
-    String restrictions = '';
-    if (_routeOptions.avoidHighways) restrictions += 'highways|';
-    if (_routeOptions.avoidTolls) restrictions += 'tolls|';
-    if (_routeOptions.avoidFerries) restrictions += 'ferries|';
-    if (restrictions.isNotEmpty) {
-      url += '&avoid=${restrictions.substring(0, restrictions.length - 1)}';
-    }
+  //   String restrictions = '';
+  //   if (_routeOptions.avoidHighways) restrictions += 'highways|';
+  //   if (_routeOptions.avoidTolls) restrictions += 'tolls|';
+  //   if (_routeOptions.avoidFerries) restrictions += 'ferries|';
+  //   if (restrictions.isNotEmpty) {
+  //     url += '&avoid=${restrictions.substring(0, restrictions.length - 1)}';
+  //   }
 
-    final response = await http.get(Uri.parse(url));
+  //   final response = await http.get(Uri.parse(url));
 
-    if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      if (data['routes'].isNotEmpty) {
-        final route = data['routes'][0];
-        final leg = route['legs'][0];
-        final points = route['overview_polyline']['points'];
-        final List<LatLng> polylineCoordinates = _decodePolyline(points);
+  //   if (response.statusCode == 200) {
+  //     final data = json.decode(response.body);
+  //     if (data['routes'].isNotEmpty) {
+  //       final route = data['routes'][0];
+  //       final leg = route['legs'][0];
+  //       final points = route['overview_polyline']['points'];
+  //       final List<LatLng> polylineCoordinates = _decodePolyline(points);
 
-        setState(() {
-          _polylines.clear();
-          _polylines.add(
-            Polyline(
-              polylineId: const PolylineId('route'),
-              points: polylineCoordinates,
-              color: Colors.blueAccent,
-              width: 6,
-            ),
-          );
-          _markers.add(
-            Marker(
-              markerId: const MarkerId('destination'),
-              position: destinationCoords,
-              infoWindow: InfoWindow(title: destinationDescription),
-            ),
-          );
-          _tripDistance = leg['distance']['text'];
-          _tripDuration = leg['duration']['text'];
-          _isRouteVisible = true;
-          _selectedPlaceDescription = destinationDescription;
-        });
-      } else {
-        _showErrorDialog('Aucun itinéraire trouvé avec ces options.');
-      }
-    } else {
-      _showErrorDialog("Erreur lors du calcul de l'itineraire.");
-    }
-  }
+  //       setState(() {
+  //         _polylines.clear();
+  //         _polylines.add(
+  //           Polyline(
+  //             polylineId: const PolylineId('route'),
+  //             points: polylineCoordinates,
+  //             color: Colors.blueAccent,
+  //             width: 6,
+  //           ),
+  //         );
+  //         _markers.add(
+  //           Marker(
+  //             markerId: const MarkerId('destination'),
+  //             position: destinationCoords,
+  //             infoWindow: InfoWindow(title: destinationDescription),
+  //           ),
+  //         );
+  //         _tripDistance = leg['distance']['text'];
+  //         _tripDuration = leg['duration']['text'];
+  //         _isRouteVisible = true;
+  //       });
+  //     } else {
+  //       _showErrorDialog('Aucun itinéraire trouvé avec ces options.');
+  //     }
+  //   } else {
+  //     _showErrorDialog("Erreur lors du calcul de l'itineraire.");
+  //   }
+  // }
 
-  List<LatLng> _decodePolyline(String encoded) {
-    List<LatLng> points = [];
-    int index = 0,
-        len = encoded.length;
-    int lat = 0,
-        lng = 0;
-    while (index < len) {
-      int b,
-          shift = 0,
-          result = 0;
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1f) << shift;
-        shift += 5;
-      } while (b >= 0x20);
-      int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-      lat += dlat;
-      shift = 0;
-      result = 0;
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1f) << shift;
-        shift += 5;
-      } while (b >= 0x20);
-      int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-      lng += dlng;
-      points.add(LatLng(lat / 1E5, lng / 1E5));
-    }
-    return points;
-  }
+  // List<LatLng> _decodePolyline(String encoded) {
+  //   List<LatLng> points = [];
+  //   int index = 0,
+  //       len = encoded.length;
+  //   int lat = 0,
+  //       lng = 0;
+  //   while (index < len) {
+  //     int b,
+  //         shift = 0,
+  //         result = 0;
+  //     do {
+  //       b = encoded.codeUnitAt(index++) - 63;
+  //       result |= (b & 0x1f) << shift;
+  //       shift += 5;
+  //     } while (b >= 0x20);
+  //     int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+  //     lat += dlat;
+  //     shift = 0;
+  //     result = 0;
+  //     do {
+  //       b = encoded.codeUnitAt(index++) - 63;
+  //       result |= (b & 0x1f) << shift;
+  //       shift += 5;
+  //     } while (b >= 0x20);
+  //     int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+  //     lng += dlng;
+  //     points.add(LatLng(lat / 1E5, lng / 1E5));
+  //   }
+  //   return points;
+  // }
 
   void _showErrorDialog(String message) {
     if (!mounted) return;
@@ -237,7 +234,6 @@ class MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _isRouteVisible = false;
       _tripDistance = null;
       _tripDuration = null;
-      _selectedPlaceDescription = '';
       // PLACES-DISABLED: _predictions = [];
     });
   }

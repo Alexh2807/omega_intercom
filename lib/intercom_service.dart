@@ -6,8 +6,7 @@ import "package:flutter/foundation.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
 import "package:shared_preferences/shared_preferences.dart";
 import "package:web_socket_channel/web_socket_channel.dart";
-import "package:shelf/shelf.dart";
-import "package:shelf_web_socket/shelf_web_socket.dart";
+
 
 enum ConnectionMode { lan, internet }
 
@@ -38,7 +37,7 @@ class IntercomService {
   IntercomService._internal();
 
   // Signaling
-  String _serverUrl = "ws://127.0.0.1:8080"; // Default to localhost
+  String _serverUrl = "ws://93.1.78.21:55667"; // Default to public IP
   WebSocketChannel? _channel;
   HttpServer? _localServer; // For LAN mode
   RawDatagramSocket? _lanDiscoverySocket; // For LAN discovery
@@ -120,7 +119,7 @@ class IntercomService {
     switch (_mode) {
       case ConnectionMode.internet:
         if (host != null && host.isNotEmpty) {
-          _serverUrl = "ws://$host:${port ?? 8080}";
+          _serverUrl = "ws://$host:${port ?? 55667}";
         }
         _connectToSignaling();
         break;
@@ -131,7 +130,7 @@ class IntercomService {
         await _startLanDiscovery();
 
         // Add a timeout to check if a leader was found
-        Future.delayed(Duration(seconds: 10), () {
+        Future.delayed(const Duration(seconds: 10), () {
           if (_lanLeaderId == null) {
             _log("No LAN leader found after 10 seconds.");
             _lanStatusC.add("No LAN leader found. Please start the signaling server on one device.");
@@ -173,14 +172,14 @@ class IntercomService {
       }
     });
 
-    _lanDiscoveryTimer = Timer.periodic(Duration(seconds: 2), (timer) {
+    _lanDiscoveryTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
       final message = json.encode({
         "type": "leader_announce",
         "id": _selfId,
         "name": _displayName,
-        "port": 8080, // Assuming local server runs on 8080
+        "port": 55667, // Assuming local server runs on 55667
       });
-      _lanDiscoverySocket!.send(utf8.encode(message), InternetAddress.broadcastIPv4, 50005);
+      _lanDiscoverySocket!.send(utf8.encode(message), InternetAddress("255.255.255.255"), 50005);
       _log("Sent LAN discovery broadcast");
     });
   }

@@ -3,9 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:omega_intercom/intercom_service.dart';
 
-// The ConnectionMode enum should be defined in the intercom_service.dart
-// For now, we define it here to avoid compilation errors.
-enum ConnectionMode { lan, internet }
+
 
 class IntercomScreen extends StatefulWidget {
   const IntercomScreen({super.key});
@@ -111,8 +109,7 @@ class _IntercomScreenState extends State<IntercomScreen> {
       return;
     }
 
-    // TODO: Pass mode and connection details to the service
-    // await _intercomService.start(mode: _mode, host: _hostCtrl.text.trim(), port: int.tryParse(_portCtrl.text.trim()));
+    await _intercomService.start(mode: _mode, host: _hostCtrl.text.trim(), port: int.tryParse(_portCtrl.text.trim()));
     _subscribeToStreams();
 
     setState(() {
