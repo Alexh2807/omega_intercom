@@ -1,39 +1,37 @@
 name: omega_intercom
-description: Une application GPS moderne pour motards.
-publish_to: 'none'
+description: Application Intercom + GPS (OMEGA) avec SFU mediasoup et WebRTC.
+publish_to: "none"
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.4.1 <4.0.0'
+  sdk: ">=3.5.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
 
-  google_maps_flutter: ^2.5.0
-  geolocator: ^12.0.0
-  http: ^1.2.1
+  # Temps réel / audio / SFU
+  mediasfu_mediasoup_client: ^0.0.8   # fork mediasoup client compatible Dart 3
+  flutter_webrtc: ^1.0.0              # plugin officiel Flutter WebRTC
+  socket_io_client: ^2.0.3+1          # stable (compatible Socket.IO v4)
 
-  # --- Plugins Intercom mis à jour ---
-  permission_handler: ^11.3.1 # Pour gérer toutes les permissions
-  flutter_sound: ^9.3.0
-  shared_preferences: ^2.3.2
-  flutter_webrtc: ^1.1.0
-  web_socket_channel: ^2.4.0
-  shelf: ^1.4.1
-  shelf_web_socket: ^1.0.4
+  # Carto / géoloc
+  google_maps_flutter: ^2.12.3
+  geolocator: ^14.0.2
 
-  cupertino_icons: ^1.0.6
+  # HTTP & utilitaires
+  http: ^1.2.2
   audio_session: ^0.2.2
+  cupertino_icons: ^1.0.6
+  shared_preferences: ^2.2.3
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^3.0.0
+  flutter_lints: ^4.0.0
 
 flutter:
   uses-material-design: true
-
-  # On déclare uniquement les assets pour les styles de carte
   assets:
     - assets/map_styles/

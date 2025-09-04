@@ -4,32 +4,22 @@ import 'package:flutter/services.dart';
 class AppConfig {
   static const MethodChannel _ch = MethodChannel('app.config');
 
-  // Cached Google Map styles
-  static String? lightMapStyle; // PERF: cached at startup
-  static String? darkMapStyle;  // PERF: cached at startup
-
-  // Cached API keys
-  static String? placesKey;
-  static String? directionsKey;
+  static String? lightMapStyle;
+  static String? darkMapStyle;
 
   static Future<void> init() async {
-    // PERF: load styles once at startup
     try {
-      lightMapStyle = await rootBundle.loadString('assets/map_styles/light_mode.json');
-    } catch (_) {
-      lightMapStyle = null;
-    }
+      lightMapStyle = await rootBundle.loadString('assets/map_styles/light.json');
+    } catch (_) {}
     try {
-      darkMapStyle = await rootBundle.loadString('assets/map_styles/dark_mode.json');
-    } catch (_) {
-      darkMapStyle = null;
-    }
-    // Lazy-load keys on demand; no-op here.
+      darkMapStyle = await rootBundle.loadString('assets/map_styles/dark.json');
+    } catch (_) {}
   }
 
-  static Future<String?> getMeta(String name) async {
+  /// Read AndroidManifest meta-data or Info.plist value (when bridged natively).
+  static Future<String?> getMeta(String key) async {
     try {
-      final v = await _ch.invokeMethod<String>('getMeta', {'name': name});
+      final v = await _ch.invokeMethod<String>('getMeta', {'key': key});
       return v;
     } catch (_) {
       return null;
@@ -37,18 +27,13 @@ class AppConfig {
   }
 
   static Future<String?> getPlacesKey() async {
-    if (placesKey != null) return placesKey;
-    // Prefer custom meta, fallback to Google Maps common key
-    placesKey = await getMeta('com.example.app.PLACES_KEY');
-    placesKey ??= await getMeta('com.google.android.geo.API_KEY');
-    return placesKey;
+    // Prefer a custom key, else fallback to common Google key
+    return (await getMeta('com.example.app.PLACES_KEY')) ??
+        (await getMeta('com.google.android.geo.API_KEY'));
   }
 
   static Future<String?> getDirectionsKey() async {
-    if (directionsKey != null) return directionsKey;
-    // Prefer custom meta, fallback to Google Maps common key
-    directionsKey = await getMeta('com.example.app.DIRECTIONS_KEY');
-    directionsKey ??= await getMeta('com.google.android.geo.API_KEY');
-    return directionsKey;
+    return (await getMeta('com.example.app.DIRECTIONS_KEY')) ??
+        (await getMeta('com.google.android.geo.API_KEY'));
   }
 }

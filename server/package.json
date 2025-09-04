@@ -1,19 +1,27 @@
 {
-  "name": "omega-intercom-server",
-  "version": "0.2.0",
-  "private": true,
-  "description": "WebRTC signaling server for Omega Intercom",
-  "main": "signaling_server.js",
+  "name": "omega-sfu-server",
+  "version": "1.0.0",
+  "description": "SFU Media Server for OMEGA Intercom using mediasoup",
+  "main": "server.js",
   "scripts": {
-    "start": "node signaling_server.js"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
-  "keywords": ["webrtc", "signaling", "intercom"],
-  "author": "",
-  "license": "UNLICENSED",
   "dependencies": {
-    "ws": "^8.14.2"
+    "express": "^4.18.2",
+    "mediasoup": "^3.11.16",
+    "socket.io": "^4.7.2"
   },
   "engines": {
-    "node": ">=14"
-  }
+    "node": ">=14.0.0"
+  },
+  "keywords": [
+    "intercom",
+    "webrtc",
+    "sfu",
+    "mediasoup",
+    "audio"
+  ],
+  "author": "OMEGA Team (SFU version)",
+  "license": "MIT"
 }

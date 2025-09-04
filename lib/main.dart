@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:omega_intercom/map_screen.dart';
 import 'package:omega_intercom/app_config.dart';
 import 'package:omega_intercom/widgets/debug_overlay.dart';
-// Il n'est plus nécessaire d'importer le plugin Places ici
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,30 +15,14 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Omega GPS',
+      title: 'OMEGA Intercom',
       theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2196F3)),
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0D47A1),
-          brightness: Brightness.light,
-        ),
       ),
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0D47A1),
-          brightness: Brightness.dark,
-        ),
-      ),
-      themeMode: ThemeMode.system,
+      darkTheme: ThemeData.dark(useMaterial3: true),
       builder: (context, child) {
-        return Stack(
-          children: [
-            if (child != null) child,
-            const DebugOverlay(),
-          ],
-        );
+        return Stack(children: [if (child != null) child, const DebugOverlay()]);
       },
       home: const MapScreen(),
     );
