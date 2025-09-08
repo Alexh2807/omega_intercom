@@ -51,13 +51,5 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-
-	<!-- Autorisations réseau local & Bonjour pour mDNS -->
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Omega Intercom utilise le réseau local pour découvrir et communiquer avec d'autres appareils.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_omega-intercom._tcp</string>
-	</array>
 </dict>
 </plist>

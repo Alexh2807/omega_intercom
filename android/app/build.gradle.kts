@@ -36,12 +36,16 @@ android {
         applicationId = "com.gravityyfh.omega_intercom"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 26
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         // Provide Google Maps API Key via Gradle property, env var, or local.properties
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
+        
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -58,5 +62,6 @@ flutter {
 }
 
 dependencies {
+    implementation("androidx.media:media:1.6.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 }
