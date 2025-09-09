@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:developer' as developer;
 import 'screens/gps_screen.dart';
-import 'screens/intercom_page_v2.dart';
+import 'screens/intercom_page.dart';
 import 'services/gps_state_service.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -66,7 +66,7 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
 
   final List<Widget> _screens = [
     const GpsScreen(),
-    const IntercomPageV2(),
+    const IntercomPage(),
   ];
 
   final List<NavItem> _navItems = [

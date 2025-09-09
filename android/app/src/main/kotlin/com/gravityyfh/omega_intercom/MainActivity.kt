@@ -11,8 +11,7 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     
-    private var bluetoothAudioHandler: BluetoothAudioHandler? = null
-    private var robustBluetoothManager: RobustBluetoothManager? = null
+    private var simpleBluetoothManager: SimpleBluetoothManager? = null
     private val AUDIO_ROUTING_CHANNEL = "omega/audio_routing"
     private val BROADCAST_CHANNEL = "com.gravityyfh.omega_intercom/broadcast"
     private var serviceUpdateReceiver: BroadcastReceiver? = null
@@ -21,49 +20,30 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         
-        // Initialiser l'ancien gestionnaire Bluetooth (rétrocompatibilité)
-        bluetoothAudioHandler = BluetoothAudioHandler(this)
+        // Initialiser le gestionnaire Bluetooth simplifié
         
-        // Initialiser le nouveau gestionnaire Bluetooth robuste
-        robustBluetoothManager = RobustBluetoothManager(this)
+        // Initialiser le nouveau gestionnaire Bluetooth simple
+        simpleBluetoothManager = SimpleBluetoothManager(this)
         
-        // Configurer l'ancien canal Bluetooth (rétrocompatibilité)
+        
+        // Configurer le nouveau canal Bluetooth simple
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            BluetoothAudioHandler.CHANNEL_NAME
-        ).setMethodCallHandler(bluetoothAudioHandler)
+            SimpleBluetoothManager.CHANNEL_NAME
+        ).setMethodCallHandler(simpleBluetoothManager)
         
-        // Configurer le nouveau canal Bluetooth robuste
-        MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            RobustBluetoothManager.CHANNEL_NAME
-        ).setMethodCallHandler(robustBluetoothManager)
         
-        // Canal d'événements pour l'ancien système
+        // Canal d'événements pour le nouveau système simple
         EventChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            BluetoothAudioHandler.EVENT_CHANNEL_NAME
+            SimpleBluetoothManager.EVENT_CHANNEL_NAME
         ).setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                bluetoothAudioHandler?.setEventSink(events)
+                simpleBluetoothManager?.setEventSink(events)
             }
             
             override fun onCancel(arguments: Any?) {
-                bluetoothAudioHandler?.setEventSink(null)
-            }
-        })
-        
-        // Canal d'événements pour le nouveau système robuste
-        EventChannel(
-            flutterEngine.dartExecutor.binaryMessenger,
-            RobustBluetoothManager.EVENT_CHANNEL_NAME
-        ).setStreamHandler(object : EventChannel.StreamHandler {
-            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-                robustBluetoothManager?.setEventSink(events)
-            }
-            
-            override fun onCancel(arguments: Any?) {
-                robustBluetoothManager?.setEventSink(null)
+                simpleBluetoothManager?.setEventSink(null)
             }
         })
 
@@ -240,8 +220,8 @@ class MainActivity : FlutterActivity() {
     }
     
     override fun onDestroy() {
-        bluetoothAudioHandler?.cleanup()
-        robustBluetoothManager?.cleanup()
+        // Nettoyage du gestionnaire Bluetooth simplifié
+        simpleBluetoothManager?.cleanup()
         serviceUpdateReceiver?.let { unregisterReceiver(it) }
         super.onDestroy()
     }
