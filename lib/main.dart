@@ -2,6 +2,8 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:developer' as developer;
+import 'package:google_maps_flutter_android/google_maps_flutter_android.dart';
+import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart';
 import 'screens/gps_screen.dart';
 import 'screens/intercom_page.dart';
 import 'services/gps_state_service.dart';
@@ -9,6 +11,11 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialiser Google Maps avec le dernier renderer pour éviter les logs Flogger
+  await (GoogleMapsFlutterPlatform.instance as GoogleMapsFlutterAndroid)
+      .initializeWithRenderer(AndroidMapRenderer.latest);
+
   // Configuration de l'interface système pour un look premium
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -64,10 +71,7 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
   int _selectedIndex = 0;
   late AnimationController _navAnimationController;
 
-  final List<Widget> _screens = [
-    const GpsScreen(),
-    const IntercomPage(),
-  ];
+  late List<Widget> _screens;
 
   final List<NavItem> _navItems = [
     NavItem(
@@ -95,6 +99,15 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
       duration: const Duration(milliseconds: 300),
       vsync: this,
     );
+    // Build screens with cross-toggle callbacks
+    _screens = [
+      GpsScreen(
+        onSwitchToIntercom: () => setState(() => _selectedIndex = 1),
+      ),
+      IntercomPage(
+        onSwitchToGPS: () => setState(() => _selectedIndex = 0),
+      ),
+    ];
     
     // Initialiser le service GPS dès le démarrage de l'application
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -136,6 +149,7 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       extendBody: true,
       body: Container(
         decoration: const BoxDecoration(
@@ -153,115 +167,6 @@ class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
         child: IndexedStack(
           index: _selectedIndex,
           children: _screens,
-        ),
-      ),
-      
-      // Navigation bottom premium avec glassmorphism
-      bottomNavigationBar: Container(
-        margin: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(28),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.3),
-              blurRadius: 20,
-              offset: const Offset(0, -5),
-            ),
-          ],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-            child: Container(
-              height: 80,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.08),
-                    Colors.white.withValues(alpha: 0.02),
-                  ],
-                ),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.1),
-                  width: 1,
-                ),
-              ),
-              child: Row(
-                children: List.generate(_navItems.length, (index) {
-                  final isSelected = index == _selectedIndex;
-                  return Expanded(
-                    child: GestureDetector(
-                      onTap: () => _onItemTapped(index),
-                      child: AnimatedBuilder(
-                        animation: _navAnimationController,
-                        builder: (context, child) {
-                          return Container(
-                            height: 80,
-                            decoration: BoxDecoration(
-                              gradient: isSelected 
-                                  ? LinearGradient(
-                                      begin: Alignment.topCenter,
-                                      end: Alignment.bottomCenter,
-                                      colors: [
-                                        _navItems[index].gradient.colors.first.withValues(alpha: 0.15),
-                                        _navItems[index].gradient.colors.last.withValues(alpha: 0.05),
-                                      ],
-                                    )
-                                  : null,
-                              borderRadius: BorderRadius.circular(24),
-                            ),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                AnimatedContainer(
-                                  duration: const Duration(milliseconds: 200),
-                                  padding: EdgeInsets.all(isSelected ? 12 : 8),
-                                  decoration: BoxDecoration(
-                                    gradient: isSelected 
-                                        ? _navItems[index].gradient
-                                        : null,
-                                    borderRadius: BorderRadius.circular(16),
-                                    boxShadow: isSelected ? [
-                                      BoxShadow(
-                                        color: _navItems[index].gradient.colors.first.withValues(alpha: 0.3),
-                                        blurRadius: 12,
-                                        offset: const Offset(0, 4),
-                                      ),
-                                    ] : null,
-                                  ),
-                                  child: Icon(
-                                    isSelected ? _navItems[index].activeIcon : _navItems[index].icon,
-                                    color: isSelected ? Colors.white : const Color(0xFF666666),
-                                    size: isSelected ? 24 : 20,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                AnimatedDefaultTextStyle(
-                                  duration: const Duration(milliseconds: 200),
-                                  style: TextStyle(
-                                    fontSize: isSelected ? 11 : 10,
-                                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
-                                    color: isSelected 
-                                        ? _navItems[index].gradient.colors.first
-                                        : const Color(0xFF666666),
-                                    letterSpacing: 0.5,
-                                  ),
-                                  child: Text(_navItems[index].label),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  );
-                }),
-              ),
-            ),
-          ),
         ),
       ),
     );
